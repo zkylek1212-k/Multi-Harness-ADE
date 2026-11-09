@@ -1,14 +1,14 @@
-// npm run build && node_modules/.bin/electron scripts/check-remote-cowork.cjs [screenshot-dir]
+// npm run build:ui && node scripts/check-remote-cowork.cjs [screenshot-dir]
 // 手機版 Cowork：真的手機 bundle（out/renderer/remote.html），假的桌面 WebSocket。
 // 驗證開會表單帶出桌面記住的與會者、送出的 op／參數跟桌面 window.api.cowork 一致，以及各階段的按鈕與輸入框。
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow } = require('./lib/browser-window.cjs')
 const fs = require('node:fs')
 const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 const assert = require('node:assert/strict')
 
-const root = path.join(__dirname, '../out/renderer')
+const root = path.join(__dirname, '../out/desktop')
 const shots = process.argv[2]
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-cowork-check-'))
 app.setPath('userData', path.join(dir, 'user-data'))
@@ -39,6 +39,7 @@ class FakeSocket {
           baseline: { ok: true }, defaults: { chair: 'codex', participants: ['claude', 'codex'], models: { claude: { model: 'opus', effort: 'high' } }, summarizer: null, summarizeEachRound: true, limits: { maxPlanningCalls: 6, maxPlanningMinutes: 10, maxExecutionMinutes: 30 } } }
       : m.op === 'models' ? [{ agent: 'claude', options: [{ id: 'opus', label: 'Opus' }], fallback: { model: '', effort: '', source: 'cli-default' } }]
       // 沒回傳值的操作跟真的桌面一樣不帶 data（JSON 會丟掉 undefined）
+      : m.op === 'execPreview' ? { hash: 'preview-hash', mode: m.args[1].mode, linkDeps: true, bypass: true, baseCommit: 'abc', checks: [{ taskId: 't1', argv: ['npm', 'test'], resolved: 'C:/node/npm.cmd' }], worktreeRoot: 'C:/x', warnings: ['bypass-on'] }
       : m.op === 'list' ? [] : m.op === 'start' || m.op === 'get' ? RUN : undefined
     this.emit({ t: 'cowork', reqId: m.reqId, result: { ok: true, data } })
   }
@@ -146,8 +147,13 @@ app.whenReady().then(async () => {
     await js(`__push({ phase: 'approved' })`)
     await waitFor(hasText('Run Sequentially'), 'exec buttons')
     await click('button.btn', 'Run Sequentially')
+    // 先看要核准的內容（Bypass、會執行的指令），確認後才開始，並帶上內容 hash
+    await waitFor(`window.__ops.at(-1).op === 'execPreview'`, 'execPreview op')
+    await waitFor(hasText('Bypass is on'), 'bypass state is shown')
+    await waitFor(hasText('npm test'), 'checks are shown')
+    await click('button.btn', 'Confirm and start')
     await waitFor(`window.__ops.at(-1).op === 'execStart'`, 'execStart op')
-    assert.deepEqual((await lastOp()).args, ['r1', { mode: 'sequential' }])
+    assert.deepEqual((await lastOp()).args, ['r1', { mode: 'sequential', approval: 'preview-hash' }])
 
     // 結束的會議可以刪除，刪完回清單
     await js(`__push({ phase: 'cancelled' })`)

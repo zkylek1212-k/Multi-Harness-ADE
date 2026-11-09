@@ -8,7 +8,13 @@ registerHooks({
       return next(specifier, context)
     } catch (e) {
       const relative = specifier.startsWith('./') || specifier.startsWith('../')
-      if (relative && !/\.[cm]?[jt]s$/.test(specifier)) return next(`${specifier}.ts`, context)
+      if (relative && !/\.[cm]?[jt]s$/.test(specifier)) {
+        try {
+          return next(`${specifier}.ts`, context)
+        } catch {
+          return next(`${specifier}/index.ts`, context)
+        }
+      }
       throw e
     }
   }

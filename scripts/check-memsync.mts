@@ -7,7 +7,13 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { applyBundledPlugin, autoLinkBlock, connectRepoByUrl, installedPlugins, pluginAction, pluginVersion, prepareMarketplace, createRepoViaGitLogin, parseRepoInput, ensureRepo, ensureFolder, linkProject, projectState, syncNow, ghStatus, MemSyncError, type Run, type Tools } from '../src/main/memsync/core.ts'
+import './ts-resolve.mjs'
+const core: any = await import('./lib/memsync-rust.mts')
+const { applyBundledPlugin, autoLinkBlock, cloneState, connectRepoByUrl, installedPlugins, pluginAction, pluginVersion, prepareMarketplace, createRepoViaGitLogin, parseRepoInput, ensureRepo, ensureFolder, linkProject, projectState, syncNow, ghStatus } = core as any
+type RunResult = { code: number; stdout: string; stderr: string }
+type Run = (cmd: string, args: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string }) => Promise<RunResult>
+type Tools = { git: string; gh: string | null; run: Run; httpStatus?: (url: string) => Promise<number>; githubApi?: (method: string, apiPath: string, token: string, body?: unknown) => Promise<{ status: number; json: any }> }
+type MemSyncError = Error & { code: string }
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'memsync-check-'))
@@ -216,7 +222,7 @@ const conflict = await syncNow(tools, { clonePath: memA, workspace: projA, login
 assert.ok(conflict.committed && !conflict.pulled && conflict.error, JSON.stringify(conflict))
 assert.ok(!fs.existsSync(path.join(memA, '.git', 'rebase-merge')) && !fs.existsSync(path.join(memA, '.git', 'rebase-apply')), 'rebase aborted')
 assert.match(fs.readFileSync(hA, 'utf8'), /edited on A/, "A's edit kept locally")
-const cs = await (await import('../src/main/memsync/core.ts')).cloneState(tools, memA)
+const cs = await cloneState(tools, memA)
 assert.ok(cs.ahead === 1 && cs.behind === 1 && !cs.dirty, JSON.stringify(cs))
 console.log('sync: conflicting edits reported, rebase aborted, local commit kept ok')
 
@@ -615,3 +621,4 @@ console.log('Claude Code entry file: written without the plugin, excluded, regen
 
 fs.rmSync(tmp, { recursive: true, force: true })
 console.log('memsync ok')
+;(core as any).stop?.()

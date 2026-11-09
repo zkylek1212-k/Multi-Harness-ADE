@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zkylek1212-k/Mulit-Harness-ADE.git"
+    "url": "https://github.com/zkylek1212-k/Multi-Harness-ADE.git"
   },
-  "homepage": "https://github.com/zkylek1212-k/Mulit-Harness-ADE#readme",
+  "homepage": "https://github.com/zkylek1212-k/Multi-Harness-ADE#readme",
   "bugs": {
-    "url": "https://github.com/zkylek1212-k/Mulit-Harness-ADE/issues"
+    "url": "https://github.com/zkylek1212-k/Multi-Harness-ADE/issues"
   },
   "scripts": {
     "dev": "electron-vite dev",

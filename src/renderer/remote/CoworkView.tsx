@@ -17,7 +17,9 @@ import {
   type CoworkPhase,
   type CoworkRun,
   type CoworkRunSummary,
-  type CoworkSettings
+  type CoworkSettings,
+  mergeBlockers,
+  type ExecPreview
 } from '../../shared/cowork'
 import type { RemoteConnection } from './conn'
 import { AgentMark, IArrowUp, ICheck, IPlus, IWarning } from './icons'
@@ -455,9 +457,14 @@ function RunScreen({
   const [text, setText] = useState('')
   const [confirm, setConfirm] = useState<'cancel' | 'delete' | null>(null)
   const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<ExecPreview | null>(null)
+  const [waive, setWaive] = useState('')
+  const [mergeWaive, setMergeWaive] = useState('')
+  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(null)
   const d = run.discussion
   const board = currentBoard(run)
   const ex = run.execution
+  const blockers = mergeBlockers(ex)
   const act = async (op: string, ...args: unknown[]): Promise<boolean> => {
     setBusy(true)
     const ok = (await call(op, run.id, ...args)) !== undefined
@@ -512,11 +519,28 @@ function RunScreen({
     if (d && kind === 'step-failed' && run.pending?.step === 'discussion' && speaker) btn(t('cwSkipSpeaker', { name: agentLabel(speaker) }), () => act('drop'))
   }
   if (run.phase === 'approved' && !ex) {
-    btn(t('cwExecSeq'), () => act('execStart', { mode: 'sequential' }), true)
-    btn(t('cwExecPar'), () => act('execStart', { mode: 'parallel' }))
+    const ask = async (mode: 'sequential' | 'parallel'): Promise<void> => {
+      setBusy(true)
+      const p = (await call('execPreview', run.id, { mode })) as ExecPreview | undefined
+      setBusy(false)
+      setPreview(p || null)
+    }
+    if (preview) {
+      const blocked = preview.checks.some((c) => c.error)
+      btn(t('cwExecConfirm'), async () => {
+        await act('execStart', { mode: preview.mode, approval: preview.hash })
+        setPreview(null)
+      }, !blocked)
+      btn(t('cwCancel'), () => setPreview(null))
+    } else {
+      btn(t('cwExecSeq'), () => ask('sequential'), true)
+      btn(t('cwExecPar'), () => ask('parallel'))
+    }
   }
   if (run.phase === 'executing' && ex) btn(ex.paused ? t('cwResume') : t('cwPause'), () => act(ex.paused ? 'execResume' : 'execPause'), ex.paused)
-  if (run.phase === 'review' && ex?.integration?.status === 'ok') btn(t('cwMerge', { branch: run.repo.sourceBranch }), () => act('execMerge'), true)
+  if (run.phase === 'review' && ex?.integration?.status === 'ok' && ex.targetCheck?.status !== 'conflict' && !(blockers.length && !mergeWaive.trim())) {
+    btn(t('cwMerge', { branch: run.repo.sourceBranch }), () => act('execMerge', { commit: ex.integration?.commit || '', targetHead: ex.targetHead || '', ...(mergeWaive.trim() ? { waive: mergeWaive.trim() } : {}) }), true)
+  }
   if ((run.phase === 'review' || run.phase === 'completed') && ex && !ex.cleaned) btn(t('cwCleanup'), () => act('execCleanup'))
   if (canCancel) actions.push(<button key="cancel" className="text-btn press" disabled={busy} onClick={() => setConfirm('cancel')}>{t('cwCancel')}</button>)
   else if (canDelete) actions.push(<button key="delete" className="text-btn press" disabled={busy} onClick={() => setConfirm('delete')}>{t('cwDelete')}</button>)
@@ -585,9 +609,23 @@ function RunScreen({
                         <b>{t('cwScopeTitle', { count: te.scopeReview.files.length })}</b>
                         <ul>{te.scopeReview.files.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
                         <button className="text-btn press" disabled={busy} onClick={() => act('execRevertScope', task.id)}>{t('cwScopeRevert')}</button>
-                        <button className="text-btn press" disabled={busy} onClick={() => act('execAcceptScope', task.id)}>{t('cwScopeAccept')}</button>
+                        <button className="text-btn press" disabled={busy} onClick={() => act('execAcceptScope', task.id, te.scopeReview?.hash)}>{t('cwScopeAccept')}</button>
                       </div>
                     )}
+                    {te?.status === 'blocked' && te.gate && !ex?.cleaned && (
+                      <div className="cw-scope-review">
+                        <b>{t(te.gate.kind === 'acceptance' ? 'cwGateAcceptance' : te.gate.kind === 'checks' ? 'cwGateChecks' : 'cwGateGit')}</b>
+                        <pre className="cw-pre">{te.gate.items.join('\n')}</pre>
+                        {te.gate.kind !== 'git-config' && (
+                          <>
+                            <input className="cw-select" value={waive} placeholder={t('cwWaivePlaceholder')} onChange={(e) => setWaive(e.target.value)} />
+                            <button className="text-btn press" disabled={busy || !waive.trim()} onClick={() => act('execWaive', task.id, waive)}>{t('cwWaive')}</button>
+                          </>
+                        )}
+                        <button className="text-btn press" disabled={busy} onClick={() => act('execRetry', task.id)}>{t('cwRetry')}</button>
+                      </div>
+                    )}
+                    {te?.waiver && <p className="t-foot">{t('cwWaived', { reason: te.waiver.reason })}</p>}
                   </details>
                 )
               })}
@@ -600,7 +638,55 @@ function RunScreen({
             )}
           </>
         )}
+        {preview && (
+          <article className="bubble cw-card">
+            <b>{t('cwExecConfirmTitle')}</b>
+            <p className="t-foot">{t(preview.bypass ? 'cwExecBypassOn' : 'cwExecBypassOff')}</p>
+            {preview.checks.map((c, i) => (
+              <p key={i} className="t-foot"><code>{c.argv.join(' ')}</code>{c.resolved && c.resolved !== c.argv[0] ? <> → <code>{c.resolved}</code></> : null}{c.error ? ` (${c.error})` : ''}</p>
+            ))}
+            {preview.checks.length > 0 && <p className="t-foot">{t('cwExecChecksRisk')}</p>}
+          </article>
+        )}
         {ex?.integration?.stat && <pre className="bubble cw-card cw-pre">{ex.integration.stat}</pre>}
+        {run.phase === 'review' && ex?.integration?.status === 'ok' && (
+          <article className="bubble cw-card">
+            {ex.gates && <p className="t-foot">{t(ex.integration.checks === 'passed' ? 'cwIntPassed' : ex.integration.checks === 'failed' ? 'cwIntFailed' : 'cwIntNone')}</p>}
+            {ex.targetCheck && <p className="t-foot">{t('cwTargetMoved', { branch: run.repo.sourceBranch, status: ex.targetCheck.status })}</p>}
+            {ex.review && (
+              <>
+                <b>{t('cwReview', { agent: ex.review.agent ? agentLabel(ex.review.agent) : '-' })}</b>
+                <p className="t-foot">{t('cwReviewAdvisory')}</p>
+                {ex.review.status === 'failed' && <p className="t-foot">{ex.review.error}</p>}
+                {ex.review.message && <Md text={ex.review.message} />}
+                {ex.review.findings.map((f, i) => <p key={i} className="t-foot"><b>{f.severity}</b> <code>{f.file}{f.line ? `:${f.line}` : ''}</code> {f.problem}</p>)}
+              </>
+            )}
+            {blockers.length > 0 && (
+              <div className="cw-scope-review">
+                <b>{t('cwMergeBlockers')}</b>
+                <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+                <input className="cw-select" value={mergeWaive} placeholder={t('cwWaivePlaceholder')} onChange={(e) => setMergeWaive(e.target.value)} />
+              </div>
+            )}
+            <button
+              className="text-btn press"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true)
+                const d = (await call('execDiff', run.id)) as { text: string; truncated: boolean } | null | undefined
+                setBusy(false)
+                setDiff(d ? d : null)
+              }}
+            >{t('cwShowDiff')}</button>
+            {diff && (
+              <>
+                {diff.truncated && <p className="t-foot">{t('cwDiffTruncated')}</p>}
+                <pre className="cw-pre">{diff.text}</pre>
+              </>
+            )}
+          </article>
+        )}
 
         {run.phase === 'meeting' && <p className="footnote" role="status">{speaker ? t('cwSpeaking', { name: agentLabel(speaker) }) : t('cwPlanning')}</p>}
         {run.block && (run.phase === 'blocked' || run.phase === 'paused') && (

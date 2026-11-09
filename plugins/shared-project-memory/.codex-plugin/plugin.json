@@ -1,13 +1,13 @@
 {
   "name": "shared-project-memory",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Explicitly initialize shared project memory in a Git repository.",
   "author": {
     "name": "zkylek1212-k",
     "url": "https://github.com/zkylek1212-k"
   },
-  "homepage": "https://github.com/zkylek1212-k/Mulit-Harness-ADE/tree/master/plugins/shared-project-memory",
-  "repository": "https://github.com/zkylek1212-k/Mulit-Harness-ADE",
+  "homepage": "https://github.com/zkylek1212-k/Multi-Harness-ADE/tree/master/plugins/shared-project-memory",
+  "repository": "https://github.com/zkylek1212-k/Multi-Harness-ADE",
   "license": "MIT",
   "skills": "./skills/",
   "hooks": "./hooks/codex-hooks.json",

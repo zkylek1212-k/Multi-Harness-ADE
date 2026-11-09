@@ -1,6 +1,12 @@
 // 自我檢查：node --experimental-strip-types scripts/check-usage.mts
 import assert from 'node:assert'
-import { claudeDays, codexDays, antigravityDays, sumDays, dayKey } from '../src/main/ipc/usageParse.ts'
+import { coreCall } from './lib/core-call.mts'
+
+const claudeDays = (t: string): any => coreCall('claudeDays', t)
+const codexDays = (t: string): any => coreCall('codexDays', t)
+const antigravityDays = (t: string): any => coreCall('antigravityDays', t)
+const sumDays = (d: unknown, since = ''): any => coreCall('sumDays', d, since)
+const dayKey = (s: string): string => coreCall('dayKey', s)
 
 const j = (o: unknown): string => JSON.stringify(o)
 const d1 = '2026-09-01T10:00:00'

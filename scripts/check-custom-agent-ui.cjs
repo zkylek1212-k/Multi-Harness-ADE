@@ -1,5 +1,5 @@
-// node_modules/.bin/electron scripts/check-custom-agent-ui.cjs
-const { app, BrowserWindow } = require('electron')
+// node scripts/check-custom-agent-ui.cjs
+const { app, BrowserWindow } = require('./lib/browser-window.cjs')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -30,7 +30,7 @@ window.api = {
     customList:async kind=>(kind==='mcp'||kind==='hook')?[kind==='mcp'?'mcp.json':'hooks.json']:[...files.keys()].filter(k=>k.startsWith(kind+':')).map(k=>k.slice(kind.length+1)),
     customRead:async(kind,file)=>files.get(kind+':'+file)??null,
     customWrite:async(kind,file,content,before)=>{window.writes.push({kind,file,content,before});files.set(kind+':'+file,content)}},
-  conn:{list:async()=>[]}, notify:{show(){}},
+  conn:{list:async()=>[]}, notify:{show(){}}, window:{setTitleBarTheme(){}}, memsync:{pluginState:async()=>({ok:false})},
   pty:{launchers:async()=>[],onRemoteSpawned:()=>()=>{},spawn:async opts=>{window.spawns.push(opts);return 'test-pty'},
     resize(){},write(){},kill(){},onData:()=>()=>{},onResized:()=>()=>{},onExit:()=>()=>{}}
 }
@@ -61,7 +61,7 @@ app.whenReady().then(async () => {
     try { return await win.webContents.executeJavaScript(code) }
     catch (e) { console.error('UI action failed:', code, errors); throw e }
   }
-  const pause = () => new Promise(r => setTimeout(r, 250))
+  const pause = () => win.webContents.settled(250)
   const errors = []
   win.webContents.on('console-message', (_e, level, message) => { if (level >= 3) errors.push(message) })
   try {

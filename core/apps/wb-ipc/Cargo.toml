@@ -1,0 +1,11 @@
+[package]
+name = "wb-ipc"
+description = "wb-core with no UI: one JSON call per line on stdin. Contract tests drive the backend through this."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+wb-core = { path = "../../crates/wb-core" }
+serde_json = "1"

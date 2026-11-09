@@ -156,3 +156,13 @@ export const BUILTIN_LAUNCHERS: RemoteLauncher[] = [
   { key: 'powershell', title: 'PowerShell', kind: 'shell' },
   { key: 'cmd', title: 'Command Prompt', kind: 'shell' }
 ]
+
+/** 手機可以呼叫的 Cowork 操作；新操作預設不開放（editBoard、git 設定放行只在桌面） */
+export const PHONE_COWORK_OPS: ReadonlySet<string> = new Set([
+  'capabilities', 'models', 'list', 'get', 'start', 'cancel', 'discuss', 'summarizer', 'summarize', 'retry', 'drop', 'note', 'feedback',
+  'dismiss', 'approve', 'raiseLimits', 'delete', 'execPreview', 'execDiff', 'execStart', 'execMessage', 'execRetry', 'execAcceptScope',
+  'execRevertScope', 'execWaive', 'execPause', 'execResume', 'execMerge', 'execCleanup'
+])
+
+/** 這些操作要留下稽核紀錄（內容識別，不含機密） */
+export const PHONE_AUDITED_OPS: ReadonlySet<string> = new Set(['approve', 'execStart', 'execAcceptScope', 'execRevertScope', 'execWaive', 'execMerge', 'execCleanup', 'delete'])

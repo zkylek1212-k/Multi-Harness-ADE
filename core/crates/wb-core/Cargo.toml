@@ -1,0 +1,46 @@
+[package]
+name = "wb-core"
+description = "Everything the UI asks the backend for, one handler per IPC channel. No UI framework in here."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+wb-proc = { path = "../wb-proc" }
+wb-git = { path = "../wb-git" }
+wb-secrets = { path = "../wb-secrets" }
+wb-pty = { path = "../wb-pty" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+notify = "8"
+serde_norway = "0.9"
+base64 = "0.22"
+ureq = "3"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+url = "2"
+percent-encoding = "2"
+ring = "0.17"
+if-addrs = "0.15.0"
+gethostname = "1.1.0"
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "x509-parser"] }
+x509-parser = "0.18.1"
+rsa = { version = "0.9", features = ["pem"] }
+rand = { version = "0.8", default-features = false, features = ["getrandom", "std", "std_rng"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+bytes = "1.12.1"
+time = "0.3.55"
+
+[target.'cfg(windows)'.dependencies]
+junction = "1"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

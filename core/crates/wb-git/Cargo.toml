@@ -1,0 +1,11 @@
+[package]
+name = "wb-git"
+description = "Cowork git operations: worktrees, commits, merges, hook trust and git config guard. Calls the git CLI."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [ "apps/desktop", "apps/wb-ipc", "crates/wb-proc", "crates/wb-git", "crates/wb-secrets", "crates/wb-pty", "crates/wb-core"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.0.0"
+publish = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

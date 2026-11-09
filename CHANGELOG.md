@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0] - Unreleased
+
+### Changed / 變更
+- Windows 版改用 Tauri 與 Rust 後端，不再使用 Electron。介面與手機頁面不變，設定、會議紀錄與已配對的手機會沿用。
+- The Windows app now runs on Tauri with a Rust backend instead of Electron. The interface and phone page are unchanged; settings, meeting records and paired phones carry over.
+- 安裝檔由 83 MB 降到約 9 MB；記憶體用量與先前相近，執行環境需要 Microsoft Edge WebView2。
+- The installer drops from 83 MB to about 9 MB. Memory use is about the same as before, and the app needs the Microsoft Edge WebView2 runtime.
+
+### Upgrading / 升級
+- 0.1.x 不會自動更新到這一版，請手動下載安裝；安裝時會移除舊版，資料會保留。
+- 0.1.x does not auto-update to this version. Download and install it by hand; the installer removes the old version and keeps your data.
+- 之後的更新改用簽章驗證。
+- Updates from here on are signature-checked.
+
 ## [0.1.48] - 2026-11-06
 
 ### Added / 新增

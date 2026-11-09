@@ -26,7 +26,7 @@ assert.equal(upstreamBaseOf('0.1.41'), null)
 assert.equal(upstreamBaseOf('0.1.41-beta.1'), null)
 
 assert.ok(isValidVersion('0.1.41-fork.1') && !isValidVersion('fork-v0.1.41') && !isValidVersion('0.1'))
-assert.ok(isRepoSlug('ikenican/Mulit-Harness-ADE'))
+assert.ok(isRepoSlug('ikenican/Multi-Harness-ADE'))
 for (const bad of ['ikenican', 'a/b/c', 'https://evil.example/x', '../x/y', 'a /b']) assert.ok(!isRepoSlug(bad), bad)
 
 console.log('version ok')

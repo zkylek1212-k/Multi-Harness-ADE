@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-webview-create"
+description = "Enables the webview_create command without any pre-configured scope."
+commands.allow = ["webview_create"]
+
+[[permission]]
+identifier = "deny-webview-create"
+description = "Denies the webview_create command without any pre-configured scope."
+commands.deny = ["webview_create"]

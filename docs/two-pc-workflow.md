@@ -24,8 +24,8 @@ Workbench 本身的設定、儀表板紀錄、Cowork 會議紀錄存在各台電
    ```
 2. **取得專案**
    ```bash
-   git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-   cd Mulit-Harness-ADE
+   git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+   cd Multi-Harness-ADE
    npm install
    git config core.hooksPath .githooks
    ```

@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "App windows only, and only their own pages. Child webviews show outside content and get nothing.",
+  "local": true,
+  "webviews": ["w*", "terminal"],
+  "permissions": [
+    "core:default",
+    "allow-ipc",
+    "allow-ipc-send",
+    "allow-subscribe",
+    "allow-window-control",
+    "allow-open-external",
+    "allow-legacy-local-storage",
+    "allow-webview-create",
+    "allow-webview-close",
+    "allow-webview-navigate",
+    "allow-webview-bounds",
+    "allow-webview-action",
+    "allow-e2e-result"
+  ]
+}

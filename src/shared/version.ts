@@ -2,7 +2,7 @@
 // A fork build is versioned "<upstream base>-fork.<n>" (e.g. 0.1.41-fork.2), so the upstream
 // version it is based on can be read straight from its own version.
 
-export const UPSTREAM_REPO = 'zkylek1212-k/Mulit-Harness-ADE'
+export const UPSTREAM_REPO = 'zkylek1212-k/Multi-Harness-ADE'
 
 interface Parsed {
   core: [number, number, number]

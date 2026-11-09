@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { IconClose } from '@/components/Icons'
+import { Webview } from '@/components/Webview'
 import { useTranslation } from '@/i18n'
 import { useWorkbench } from '@/store'
 import './browser.css'
@@ -296,7 +297,7 @@ export default function TestBrowserPanel({ onClose, idleUntilRequested = false }
         >
           {url ? (
             <>
-              <webview
+              <Webview
                 ref={webviewRef}
                 src={url}
                 className="browser-webview"

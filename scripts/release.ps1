@@ -1,16 +1,17 @@
 <#
 .SYNOPSIS
-    Automated Release & Publish Workflow for Agent Workbench (Mulit-Harness-ADE).
+    Automated Release & Publish Workflow for Agent Workbench (Multi-Harness-ADE).
     (Maintainers only - requires repository write permissions via GitHub CLI 'gh')
 
 .DESCRIPTION
     1. Validates GitHub CLI authentication (`gh`).
     2. Reads version from `package.json` (e.g. 0.1.3 -> v0.1.3).
     3. Runs TypeScript typecheck.
-    4. Builds production installer and packages (npm run dist).
-    5. Packages win-unpacked directory into a portable ZIP package.
+    4. Builds the installer with Tauri (npm run dist), signing it for the updater.
+    5. Packages the program and its resources into a portable ZIP package.
     6. Creates or updates GitHub Release via `gh release` (supports assets up to 2GB).
-    7. Uploads setup .exe, portable .zip, and latest.yml auto-updater metadata.
+    7. Uploads setup .exe, its signature, portable .zip, and latest.json updater metadata.
+       The updater needs TAURI_SIGNING_PRIVATE_KEY (kept out of the repo) and WB_UPDATER_PUBKEY in the environment.
     8. Optionally copies assets to a local Google Drive folder if specified.
 
 .PARAMETER Notes
@@ -21,6 +22,9 @@
 
 .PARAMETER Draft
     Publish as a GitHub draft release rather than immediately public.
+
+.PARAMETER NoPublish
+    Prepare the assets in release\ and stop before anything is uploaded.
 
 .PARAMETER GoogleDrivePath
     Optional local directory path (e.g. "G:\My Drive\AgentWorkbench") to copy backups.
@@ -38,6 +42,7 @@ param(
     [string]$Notes = "",
     [switch]$SkipBuild,
     [switch]$Draft,
+    [switch]$NoPublish,
     [string]$GoogleDrivePath = ""
 )
 
@@ -93,109 +98,103 @@ $releaseTitle = "v$version"
 Write-Host ""
 Write-Host "Target Release Version: " -NoNewline -ForegroundColor White
 Write-Host "$tagName" -ForegroundColor Cyan
-Write-Host "Repository: zkylek1212-k/Mulit-Harness-ADE" -ForegroundColor Gray
+Write-Host "Repository: zkylek1212-k/Multi-Harness-ADE" -ForegroundColor Gray
 Write-Host ""
 
+# A version already published from the Electron app must never be overwritten, in release\ or on GitHub
+# No such release is the normal case here, and under Stop, Windows PowerShell treats gh's stderr as a fatal error
+$ErrorActionPreference = "Continue"
+$published = gh release view $tagName --json assets --jq '.assets[].name' 2>$null
+$ErrorActionPreference = "Stop"
+if ($published -contains "latest.yml") {
+    Write-Host "[ERROR] $tagName is a published Electron release. Raise the version in package.json first." -ForegroundColor Red
+    exit 1
+}
+
 # 2. Typecheck & Build
+# The signing key lives outside the repo. These two can also come from the environment.
+$defaultKey = Join-Path $env:USERPROFILE ".tauri\agent-workbench-updater.key"
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $defaultKey)) { $env:TAURI_SIGNING_PRIVATE_KEY = $defaultKey }
+if (-not $env:WB_UPDATER_PUBKEY -and (Test-Path "$defaultKey.pub")) { $env:WB_UPDATER_PUBKEY = (Get-Content -Raw "$defaultKey.pub").Trim() }
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -or -not $env:WB_UPDATER_PUBKEY) {
+    Write-Host "[ERROR] No updater signing key. Without a signature, installed apps cannot update." -ForegroundColor Red
+    Write-Host "Create one with: npx tauri signer generate -w $defaultKey. Back up the private key outside the repo." -ForegroundColor Yellow
+    exit 1
+}
+
+$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $env:LOCALAPPDATA "wb-cargo-target" }
+$env:CARGO_TARGET_DIR = $targetDir
+$bundleDir = Join-Path $targetDir "release\bundle\nsis"
+
 if (-not $SkipBuild) {
-    Write-Host "==========================================" -ForegroundColor DarkGray
     Write-Host "[Step 1/4] Running TypeScript Typecheck..." -ForegroundColor Cyan
-    Write-Host "==========================================" -ForegroundColor DarkGray
     npm run typecheck
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] TypeScript typecheck failed! Aborting release." -ForegroundColor Red
         exit 1
     }
-    Write-Host "[OK] Typecheck passed with 0 errors." -ForegroundColor Green
-
-    Write-Host ""
-    Write-Host "==========================================" -ForegroundColor DarkGray
-    Write-Host "[Step 2/4] Building Distributables (npm run dist)..." -ForegroundColor Cyan
-    Write-Host "==========================================" -ForegroundColor DarkGray
-    npm run dist
+    Write-Host "[Step 2/4] Building the installer..." -ForegroundColor Cyan
+    npm run build:ui
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+    # Signing while bundling needs the public key in the config too
+    $updaterConfig = Join-Path $env:TEMP "agent-workbench-updater-config.json"
+    $configJson = @{
+        bundle = @{ createUpdaterArtifacts = $true }
+        plugins = @{ updater = @{ pubkey = $env:WB_UPDATER_PUBKEY; endpoints = @("https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/latest/download/latest.json") } }
+    } | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($updaterConfig, $configJson, (New-Object System.Text.UTF8Encoding $false))
+    npx tauri build --ci --config $updaterConfig
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] npm run dist failed! Aborting release." -ForegroundColor Red
+        Write-Host "[ERROR] Build failed! Aborting release." -ForegroundColor Red
         exit 1
     }
-    Write-Host "[OK] electron-builder finished successfully." -ForegroundColor Green
 } else {
-    Write-Host "[Notice] -SkipBuild specified: Skipping typecheck and electron-builder." -ForegroundColor Yellow
+    Write-Host "[Notice] -SkipBuild specified: Skipping typecheck and build." -ForegroundColor Yellow
 }
 
-# 3. Create Portable ZIP from release/win-unpacked
-Write-Host ""
-Write-Host "==========================================" -ForegroundColor DarkGray
-Write-Host "[Step 3/4] Packaging Portable Green ZIP..." -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor DarkGray
-
-$portableZip = "release\Agent-Workbench-$version-portable.zip"
-if (Test-Path "release\win-unpacked") {
-    if (Test-Path $portableZip) {
-        Remove-Item $portableZip -Force
-    }
-    Write-Host "Compressing release\win-unpacked -> $portableZip..." -ForegroundColor Gray
-    $retries = 5
-    $success = $false
-    for ($i = 1; $i -le $retries; $i++) {
-        try {
-            Compress-Archive -Path "release\win-unpacked\*" -DestinationPath $portableZip -Force
-            $success = $true
-            break
-        } catch {
-            Write-Host "  -> Attempt $i failed due to transient file lock, waiting 3s to retry..." -ForegroundColor Yellow
-            Start-Sleep -Seconds 3
-        }
-    }
-    if (-not $success) {
-        Write-Host "[ERROR] Failed to create portable zip package after $retries attempts." -ForegroundColor Red
-        exit 1
-    }
-    $zipSizeMB = [math]::Round((Get-Item $portableZip).Length / 1MB, 2)
-    Write-Host "[OK] Portable ZIP package created ($zipSizeMB MB)." -ForegroundColor Green
-} else {
-    Write-Host "[Warning] release\win-unpacked not found; portable ZIP skipped." -ForegroundColor Yellow
-}
-
-# 4. Gather Assets for GitHub Release
-Write-Host ""
-Write-Host "==========================================" -ForegroundColor DarkGray
-Write-Host "[Step 4/4] Publishing to GitHub Releases ($tagName)..." -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor DarkGray
-
-$setupExe = Get-ChildItem "release" -Filter "*$version*-setup.exe" | Select-Object -First 1
-$latestYml = "release\latest.yml"
-$blockmap = Get-ChildItem "release" -Filter "*$version*.blockmap" | Select-Object -First 1
-
-# Normalize spaces to hyphens so GitHub Release URLs match latest.yml and avoid 404
-if ($setupExe -and $setupExe.Name -match '\s') {
-    $cleanExeName = $setupExe.Name -replace '\s+', '-'
-    $cleanExePath = Join-Path $setupExe.DirectoryName $cleanExeName
-    Copy-Item $setupExe.FullName $cleanExePath -Force
-    $setupExe = Get-Item $cleanExePath
-}
-if ($blockmap -and $blockmap.Name -match '\s') {
-    $cleanBlockmapName = $blockmap.Name -replace '\s+', '-'
-    $cleanBlockmapPath = Join-Path $blockmap.DirectoryName $cleanBlockmapName
-    Copy-Item $blockmap.FullName $cleanBlockmapPath -Force
-    $blockmap = Get-Item $cleanBlockmapPath
-}
-
-$uploadFiles = @()
-if ($setupExe) { $uploadFiles += $setupExe.FullName }
-if (Test-Path $latestYml) { $uploadFiles += (Resolve-Path $latestYml).Path }
-if ($blockmap) { $uploadFiles += $blockmap.FullName }
-if (Test-Path $portableZip) { $uploadFiles += (Resolve-Path $portableZip).Path }
-
-if ($uploadFiles.Count -eq 0) {
-    Write-Host "[ERROR] No release files found in release\ directory to publish!" -ForegroundColor Red
+# 3. Assets under the names install.ps1 and the updater expect
+New-Item -ItemType Directory -Force -Path "release" | Out-Null
+$built = Get-ChildItem $bundleDir -Filter "*$version*-setup.exe" | Select-Object -First 1
+if (-not $built) {
+    Write-Host "[ERROR] No installer for $version in $bundleDir." -ForegroundColor Red
     exit 1
 }
+$setupName = "Agent-Workbench-$version-setup.exe"
+$setupPath = Join-Path "release" $setupName
+Copy-Item $built.FullName $setupPath -Force
+$signature = Get-Content -Raw "$($built.FullName).sig"
+Copy-Item "$($built.FullName).sig" "$setupPath.sig" -Force
+
+$latest = @{
+    version = $version
+    pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    platforms = @{ "windows-x86_64" = @{ signature = $signature.Trim(); url = "https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/download/$tagName/$setupName" } }
+}
+$latestJson = "release\latest.json"
+[System.IO.File]::WriteAllText($latestJson, ($latest | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding $false))
+
+$portableZip = "release\Agent-Workbench-$version-portable.zip"
+$portableDir = Join-Path $env:TEMP "agent-workbench-portable-$version"
+Remove-Item $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+Copy-Item (Join-Path $targetDir "release\agent-workbench.exe") $portableDir
+Copy-Item (Join-Path $targetDir "release\plugins") $portableDir -Recurse
+Compress-Archive -Path "$portableDir\*" -DestinationPath $portableZip -Force
+Remove-Item $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host "[Step 4/4] Publishing to GitHub Releases ($tagName)..." -ForegroundColor Cyan
+$uploadFiles = @((Resolve-Path $setupPath).Path, (Resolve-Path "$setupPath.sig").Path, (Resolve-Path $latestJson).Path, (Resolve-Path $portableZip).Path)
 
 Write-Host "Assets prepared for upload:" -ForegroundColor White
 foreach ($f in $uploadFiles) {
     $item = Get-Item $f
     $mb = [math]::Round($item.Length / 1MB, 2)
     Write-Host "  * $($item.Name) ($mb MB)" -ForegroundColor Cyan
+}
+
+if ($NoPublish) {
+    Write-Host "[Notice] -NoPublish specified: assets are in release\, nothing was uploaded." -ForegroundColor Yellow
+    exit 0
 }
 
 # Determine release notes
@@ -276,11 +275,11 @@ Write-Host "      Release $tagName Successfully Published!         " -Foreground
 Write-Host "==========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Release Page URL:" -ForegroundColor White
-Write-Host "  https://github.com/zkylek1212-k/Mulit-Harness-ADE/releases/tag/$tagName" -ForegroundColor Cyan
+Write-Host "  https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/tag/$tagName" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Auto-Updater:" -ForegroundColor White
-Write-Host "  latest.yml uploaded; installed apps will detect and offer auto-update." -ForegroundColor Gray
+Write-Host "  latest.json uploaded; installed apps verify the signature and offer the update." -ForegroundColor Gray
 Write-Host ""
 Write-Host "Quick Install Command for Users:" -ForegroundColor White
-Write-Host "  irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex" -ForegroundColor Yellow
+Write-Host "  irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex" -ForegroundColor Yellow
 Write-Host ""

@@ -67,7 +67,7 @@ import { scanBgTasks } from '../ipc/dashboard'
 const PAIR_TTL_MS = 5 * 60 * 1000
 const PAIR_MAX_FAILURES = 10
 const PAIR_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // 去掉易混淆的 0/O、1/I/L
-const PUSH_SUBJECT = 'https://github.com/zkylek1212-k/Mulit-Harness-ADE'
+const PUSH_SUBJECT = 'https://github.com/zkylek1212-k/Multi-Harness-ADE'
 const DIRECT_KEYS = new Set(BUILTIN_LAUNCHERS.map((l) => l.key))
 // 只送推播到已知的推播服務，避免訂閱被拿來讓桌面對任意網址發請求
 const PUSH_HOSTS = [/^web\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /(^|\.)push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/]

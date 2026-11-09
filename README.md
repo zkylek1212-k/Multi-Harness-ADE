@@ -1,7 +1,7 @@
-# Mulit-Harness-ADE — Agent Workbench
+# Multi-Harness-ADE — Agent Workbench
 
 A lightweight, **agent-native** developer workbench: a Monaco code editor, a Git
-visualizer, N embedded CLI terminals, and Cowork multi-agent meetings. Built with Electron +
+visualizer, N embedded CLI terminals, and Cowork multi-agent meetings. Built with Tauri, Rust +
 React + Vite.
 
 *English is the primary language of this README; a 繁體中文 version follows below.*
@@ -83,7 +83,7 @@ Switching storage later migrates linked projects on open and keeps the old copy.
 Run this command in **PowerShell** (no Git or Node.js required):
 
 ```powershell
-irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 ```
 
 > **What this does:** Automatically fetches the latest release from GitHub, downloads the Windows setup installer (`.exe`), and starts the installation.
@@ -91,18 +91,18 @@ irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/inst
 > *Options:*
 > - **Silent install** (no wizard prompt):
 >   ```powershell
->   $env:INSTALL_SILENT=1; irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+>   $env:INSTALL_SILENT=1; irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 >   ```
 > - **Download installer only** (saves to current folder without running):
 >   ```powershell
->   $env:INSTALL_DOWNLOAD_ONLY=1; irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+>   $env:INSTALL_DOWNLOAD_ONLY=1; irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 >   ```
 
 ### Method 2: Direct Download from GitHub Releases
 
 Prefer manual download? Grab the setup package directly from GitHub:
 
-- 🚀 **[Download Latest Release](https://github.com/zkylek1212-k/Mulit-Harness-ADE/releases/latest)**
+- 🚀 **[Download Latest Release](https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/latest)**
 - Download `Agent-Workbench-<version>-setup.exe` and double-click to install.
 - *(Portable version: download `Agent-Workbench-<version>-portable.zip`, extract it, and run `Agent Workbench.exe` directly without installation.)*
 
@@ -120,10 +120,10 @@ For developers who want to contribute or build from source:
 ### Getting started
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-cd Mulit-Harness-ADE
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+cd Multi-Harness-ADE
 npm install
-npm run dev        # launch in development
+npm run dev        # build the page and launch with tauri dev
 ```
 
 On Windows you can instead **double-click `dev.cmd`** in the repository folder. It installs dependencies on the first run (Node.js LTS required: `winget install OpenJS.NodeJS.LTS`) and starts the dev build, which uses its own settings folder (`%APPDATA%\agent-workbench-dev`) so it runs alongside an installed copy. Renderer changes reload live and main-process changes restart the app, so there is no need to package a build to try a change. `dev.cmd` only calls `dev.ps1` with `-ExecutionPolicy Bypass` for that one run, because Windows blocks running `.ps1` files by default.
@@ -132,19 +132,21 @@ On Windows you can instead **double-click `dev.cmd`** in the repository folder. 
 
 ```bash
 npm run typecheck  # TypeScript check, no emit
-npm run build      # compile main / preload / renderer
-npm run dist       # build an installer with electron-builder
+npm run build:ui   # build the desktop and phone pages
+npm run dist       # build an NSIS installer with Tauri
 npm run release    # (Maintainers only) one-click build and publish to GitHub Releases
 ```
 
 > **Note on `npm run release`**: This script is strictly for **project maintainers** with repository write permissions. It uses your local GitHub CLI (`gh`) authentication to upload assets. External contributors cannot publish releases or modify repository assets.
 
-Installer output goes to `release/`. Build config is in `electron-builder.yml`.
+Build config is in `core/apps/desktop/tauri.conf.json`. Publishing needs `TAURI_SIGNING_PRIVATE_KEY` and `WB_UPDATER_PUBKEY`; the private key stays out of the repo.
 
 ## Project layout
 
 ```
-src/main         Electron main process (IPC, git, pty, files, extensions)
+core/            Rust backend: wb-core (one handler per IPC channel), wb-pty, wb-git, wb-proc, wb-secrets
+core/apps/desktop  Tauri app: windows, dialogs, and the pipe between each page and wb-core
+src/desktop      The page's side of that pipe, window frame and embedded browser element
 src/main/cowork   meeting orchestration, CLI runner, persistence, Git and execution
 src/main/remote  LAN remote bridge: HTTPS + WebSocket, local CA, web push, preview proxy
 src/main/memsync memory sync core (GitHub / OneDrive / Google Drive) and bundled memory scripts
@@ -212,7 +214,7 @@ Security model:
 - The local CA carries critical X.509 Name Constraints: it can only sign certificates for
   private IPv4 addresses and `*.local`, so even if its key leaked it could not impersonate
   public websites on your phone. Its private key is encrypted with the OS keychain
-  (Electron `safeStorage`). *Reset certificate and devices* creates a new CA.
+  (Windows DPAPI). *Reset certificate and devices* creates a new CA.
 - Pairing codes are single-use, expire after 5 minutes, and are invalidated after 10 wrong
   attempts. Devices get a random token; only its SHA-256 is stored. Revoking a device
   disconnects it immediately.
@@ -235,8 +237,7 @@ Security model:
   five seconds without a valid device token, and pairing over the socket has the same
   single-use code, 5-minute expiry and 10-attempt lockout as before.
 
-In development, the phone client is served from the build output: run `npm run build`
-once before testing it with `npm run dev`.
+The phone client ships inside the program, built by `npm run build:ui`.
 
 ## Configuration notes
 
@@ -290,7 +291,7 @@ the Apache License 2.0.
 # 繁體中文說明
 
 一個輕量、**agent-native** 的開發工作台：Monaco 程式碼編輯器、Git 視覺化面板，以及
-N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Electron + React + Vite 打造。
+N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Tauri、Rust + React + Vite 打造。
 
 > **設計原則——由官方 CLI 負責 agent runtime。** 工作台使用各廠商的官方 CLI 與既有登入，
 > 提供編輯、Git、終端、共享記憶，以及 Cowork 協調。Cowork 排程 CLI 呼叫、保存會議紀錄，
@@ -362,7 +363,7 @@ N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Electron + React +
 在 **PowerShell** 貼上並執行以下單行指令（無需 Git 或 Node.js）：
 
 ```powershell
-irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 ```
 
 > **說明：** 自動向 GitHub 取得最新版本安裝包（`.exe`），下載並自動啟動安裝精靈。
@@ -370,16 +371,16 @@ irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/inst
 > *進階選項：*
 > - **靜默自動安裝**（不彈出安裝引導畫面）：
 >   ```powershell
->   $env:INSTALL_SILENT=1; irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+>   $env:INSTALL_SILENT=1; irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 >   ```
 > - **僅下載安裝檔到本地**（儲存至當前目錄，不立即執行）：
 >   ```powershell
->   $env:INSTALL_DOWNLOAD_ONLY=1; irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/install.ps1 | iex
+>   $env:INSTALL_DOWNLOAD_ONLY=1; irm https://raw.githubusercontent.com/zkylek1212-k/Multi-Harness-ADE/master/install.ps1 | iex
 >   ```
 
 ### 方法二：直接自 GitHub Releases 下載
 
-- 🚀 **[前往最新發行頁面（GitHub Releases）](https://github.com/zkylek1212-k/Mulit-Harness-ADE/releases/latest)**
+- 🚀 **[前往最新發行頁面（GitHub Releases）](https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/latest)**
 - 下載 `Agent-Workbench-<版本>-setup.exe` 雙擊即可安裝。
 - *(免安裝綠色版：下載 `Agent-Workbench-<版本>-portable.zip`，解壓後直接雙擊 `Agent Workbench.exe` 即可使用)*
 
@@ -397,10 +398,10 @@ irm https://raw.githubusercontent.com/zkylek1212-k/Mulit-Harness-ADE/master/inst
 ### 快速開始
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-cd Mulit-Harness-ADE
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+cd Multi-Harness-ADE
 npm install
-npm run dev        # 開發模式啟動
+npm run dev        # 建置頁面並以 tauri dev 啟動
 ```
 
 Windows 上也可以直接**雙擊 repo 資料夾裡的 `dev.cmd`**：第一次會自動安裝相依套件（需要 Node.js LTS：`winget install OpenJS.NodeJS.LTS`），然後啟動開發版。開發版使用獨立的設定資料夾（`%APPDATA%\agent-workbench-dev`），可以和已安裝的版本同時開。改畫面會即時刷新、改主行程會自動重啟，試改動不用重新打包。`dev.cmd` 只是用 `-ExecutionPolicy Bypass` 執行一次 `dev.ps1`，因為 Windows 預設禁止直接執行 `.ps1`。
@@ -409,19 +410,21 @@ Windows 上也可以直接**雙擊 repo 資料夾裡的 `dev.cmd`**：第一次�
 
 ```bash
 npm run typecheck  # TypeScript型別檢查，不輸出
-npm run build      # 編譯 main / preload / renderer
-npm run dist       # 用 electron-builder 產生安裝檔
+npm run build:ui   # 建置桌面與手機頁面
+npm run dist       # 用 Tauri 產生 NSIS 安裝檔
 npm run release    # （僅限專案維護者）一鍵自動編譯、打包並發布至 GitHub Releases
 ```
 
 > **關於 `npm run release` 的權限說明**：此指令為**專案維護者專用**，執行時會校驗本機 GitHub CLI (`gh`) 身分憑證。未獲授權的外部貢獻者（無倉庫寫入權限者）無法發布 Release，亦無法更動任何 GitHub 上的專案發行檔案。
 
-安裝檔輸出於 `release/`；建置設定見 `electron-builder.yml`。
+建置設定見 `core/apps/desktop/tauri.conf.json`。發布需要 `TAURI_SIGNING_PRIVATE_KEY` 與 `WB_UPDATER_PUBKEY`；私鑰不進 repo。
 
 ## 專案結構
 
 ```
-src/main         Electron 主行程（IPC、git、pty、files、extensions）
+core/            Rust 後端：wb-core（每個 IPC 頻道一個處理函式）、wb-pty、wb-git、wb-proc、wb-secrets
+core/apps/desktop  Tauri app：視窗、對話框，以及頁面與 wb-core 之間的通道
+src/desktop      頁面這端的通道、視窗框與內嵌瀏覽器元素
 src/main/cowork   會議協調、CLI runner、保存、Git 與背景執行
 src/main/remote  區網遠端橋接：HTTPS + WebSocket、本機 CA、Web Push、預覽代理
 src/main/memsync 記憶同步核心（GitHub／OneDrive／Google Drive）與內建的記憶腳本
@@ -463,7 +466,7 @@ dev.cmd / dev.ps1  Windows 雙擊啟動開發版
 - 預覽代理本身不會把任何 dev server 曝露出去：它只連 `127.0.0.1`、只連「你的終端真的印出過」的 port，而且每個請求都需要 cookie，那個 cookie 只能用經認證的 WebSocket 發出的一次性 ticket（60 秒有效）換到。從手機開啟工作區也只限電腦自己的最近清單。
 - 因為手機能在同一個 App 裡切換電腦，WebSocket 握手接受兩種來源：這台電腦自己的 App，以及同一個 App 由區網上另一個私有位址提供。通過這關只是拿到一條連線——五秒內沒有有效的裝置 token 一樣會被斷開，而走連線的配對仍是一次性配對碼、5 分鐘失效、錯 10 次作廢。
 
-開發模式下，手機端頁面取自 build 產物：用 `npm run dev` 測試前請先執行一次 `npm run build`。
+手機端頁面隨程式一起打包，由 `npm run build:ui` 建置。。
 
 ## 設定備註
 

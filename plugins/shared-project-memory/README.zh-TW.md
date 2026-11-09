@@ -87,8 +87,8 @@ Agent Workbench 內附這個 plugin（原始碼在 Workbench repo 的 `plugins/s
 ### Claude Code（不透過 Agent Workbench）
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-claude plugin marketplace add ./Mulit-Harness-ADE/plugins/shared-project-memory
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+claude plugin marketplace add ./Multi-Harness-ADE/plugins/shared-project-memory
 claude plugin install shared-project-memory@shared-project-memory
 ```
 
@@ -101,9 +101,9 @@ claude plugin install shared-project-memory@shared-project-memory
 ### Codex / Antigravity / 純手動（不需要 Claude Code）
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-bash Mulit-Harness-ADE/plugins/shared-project-memory/install.sh            # 裝進目前 repo
-bash Mulit-Harness-ADE/plugins/shared-project-memory/install.sh /my/repo   # 裝進指定 repo
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+bash Multi-Harness-ADE/plugins/shared-project-memory/install.sh            # 裝進目前 repo
+bash Multi-Harness-ADE/plugins/shared-project-memory/install.sh /my/repo   # 裝進指定 repo
 ```
 
 Windows PowerShell：
@@ -121,7 +121,7 @@ Windows PowerShell：
 把 clone 裡的 plugin 資料夾加成本機 marketplace 再安裝：
 
 ```bash
-codex plugin marketplace add ./Mulit-Harness-ADE/plugins/shared-project-memory
+codex plugin marketplace add ./Multi-Harness-ADE/plugins/shared-project-memory
 codex plugin add shared-project-memory@shared-project-memory
 ```
 
@@ -130,7 +130,7 @@ codex plugin add shared-project-memory@shared-project-memory
 ### Antigravity plugin
 
 ```bash
-agy plugin install ./Mulit-Harness-ADE/plugins/shared-project-memory
+agy plugin install ./Multi-Harness-ADE/plugins/shared-project-memory
 ```
 
 Antigravity 會執行根目錄的 `hooks.json`（SessionStart → `node scripts/session-start.js --antigravity`，

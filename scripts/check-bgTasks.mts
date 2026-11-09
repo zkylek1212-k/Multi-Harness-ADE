@@ -1,6 +1,10 @@
 // 自我檢查：node --experimental-strip-types scripts/check-bgTasks.mts
 import assert from 'node:assert'
-import { claudeBgTasks, codexBgTasks, antigravityBgTasks } from '../src/main/ipc/bgTasksParse.ts'
+import { coreCall } from './lib/core-call.mts'
+
+const claudeBgTasks = (t: string): any => coreCall('claudeBgTasks', t)
+const codexBgTasks = (t: string): any => coreCall('codexBgTasks', t)
+const antigravityBgTasks = (t: string): any => coreCall('antigravityBgTasks', t)
 
 const j = (o: unknown): string => JSON.stringify(o)
 

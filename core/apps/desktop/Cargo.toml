@@ -1,0 +1,27 @@
+[package]
+name = "agent-workbench"
+description = "Agent Workbench desktop app: the UI in a system webview, everything else in wb-core."
+edition.workspace = true
+license.workspace = true
+version = "0.2.0"
+publish.workspace = true
+
+[features]
+e2e = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+wb-core = { path = "../../crates/wb-core" }
+serde_json = "1"
+rusty-leveldb = "3"
+tauri-winrt-notification = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_Storage_EnhancedStorage", "Win32_Foundation", "Win32_System_Variant"] }

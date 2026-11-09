@@ -1,0 +1,53 @@
+name: Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'apps/linux/**'
+      - '**/*.md'
+  pull_request:
+    paths-ignore:
+      - 'apps/linux/**'
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/core/target
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build:ui
+      - name: Rust tests and programs
+        working-directory: core
+        run: |
+          cargo test -p wb-proc -p wb-git -p wb-secrets -p wb-pty -p wb-core
+          cargo build -p wb-ipc -p agent-workbench
+          cargo build -p wb-pty --example mirror_text
+      - name: Check scripts
+        shell: bash
+        run: |
+          git config --global user.email ci@example.invalid
+          git config --global user.name ci
+          status=0
+          for f in scripts/check-*.mts scripts/check-*.cjs scripts/check-desktop.mjs; do
+            echo "::group::$f"
+            node --experimental-strip-types --no-warnings --import ./scripts/ts-resolve.mjs "$f" || status=1
+            echo "::endgroup::"
+          done
+          echo "::group::check-mirror-parity"
+          node scripts/check-mirror-parity.mjs "$CARGO_TARGET_DIR/debug/examples/mirror_text.exe" || status=1
+          echo "::endgroup::"
+          exit $status

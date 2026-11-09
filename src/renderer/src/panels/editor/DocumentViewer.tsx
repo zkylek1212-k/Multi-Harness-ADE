@@ -1,6 +1,7 @@
 /// <reference path="../../../../preload/index.d.ts" />
 import { useState, useEffect, useCallback } from 'react'
 import { openSettings, useWorkbench } from '@/store'
+import { Webview } from '@/components/Webview'
 import {
   IconExternalLink,
   IconFolderOpen,
@@ -268,7 +269,7 @@ export default function DocumentViewer({ filePath }: DocumentViewerProps): JSX.E
       {/* Main View Area */}
       {docType === 'pdf' && pdfEmbedded ? (
         <div className="doc-pdf-view-wrapper">
-          <webview
+          <Webview
             src={`file://${encodeURI(filePath.replace(/\\/g, '/'))}`}
             className="doc-pdf-frame"
           />

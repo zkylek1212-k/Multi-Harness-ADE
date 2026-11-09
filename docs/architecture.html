@@ -548,9 +548,24 @@
     <div class="zh">
       <h1>桌面程式、遠端橋接、手機程式：三個執行環境，同一組終端</h1>
       <p>
-        Electron 桌面程式擁有 CLI 子行程；跑在它主行程裡的區網橋接把同一組終端用 HTTPS 再發佈一次；
-        iPhone 的主畫面網頁 App 接上去。Cowork 在主行程協調會議與核准後的工作；模型執行仍由官方 CLI 負責。
+        Tauri 桌面程式擁有 CLI 子行程；跑在 Rust 後端裡的區網橋接把同一組終端用 HTTPS 再發佈一次；
+        iPhone 的主畫面網頁 App 接上去。Cowork 在 Rust 後端協調會議與核准後的工作；模型執行仍由官方 CLI 負責。
       </p>
+      <p class="note"><b>後端已改為 Rust，殼層改為 Tauri。</b>下文的流程、信任邊界與常數仍然成立；檔名與套件名是 Electron 時期（v0.1.39）的，對照如下。</p>
+      <table>
+        <thead><tr><th>Electron</th><th>Rust / Tauri</th></tr></thead>
+        <tbody>
+          <tr><td class="k">main/index.ts</td><td class="k">core/apps/desktop/src/main.rs</td></tr>
+          <tr><td class="k">main/ipc/*</td><td class="k">core/crates/wb-core/src/ (one module per channel group)</td></tr>
+          <tr><td class="k">main/remote/*</td><td class="k">core/crates/wb-core/src/remote/</td></tr>
+          <tr><td class="k">main/cowork/*</td><td class="k">core/crates/wb-core/src/cowork*.rs</td></tr>
+          <tr><td class="k">main/memsync/*</td><td class="k">core/crates/wb-core/src/memsync.rs</td></tr>
+          <tr><td class="k">node-pty, @xterm/headless</td><td class="k">wb-pty (portable-pty, alacritty_terminal)</td></tr>
+          <tr><td class="k">safeStorage</td><td class="k">wb-secrets (DPAPI; reads old safeStorage values once)</td></tr>
+          <tr><td class="k">electron-updater</td><td class="k">tauri-plugin-updater, signature required</td></tr>
+          <tr><td class="k">&lt;webview&gt;</td><td class="k">native child webviews with no IPC (src/desktop/platform.ts)</td></tr>
+        </tbody>
+      </table>
       <p class="principle">
         <b>官方 CLI 負責 agent runtime。</b>工作台提供編輯、Git、終端、共享記憶與 Cowork 協調，
         排程 CLI 呼叫、保存會議紀錄，並在使用者明確核准後執行專案。
@@ -560,10 +575,25 @@
     <div class="en">
       <h1>Desktop app, remote bridge, phone app: three runtimes, one set of terminals</h1>
       <p>
-        An Electron desktop app owns the CLI child processes. A LAN bridge inside its main process
+        A Tauri desktop app owns the CLI child processes. A LAN bridge inside its Rust backend
         re-publishes those same terminals over HTTPS. An iPhone Home Screen web app attaches to them.
-        Cowork coordinates meetings and approved work in the main process; official CLIs run the models.
+        Cowork coordinates meetings and approved work in the backend; official CLIs run the models.
       </p>
+      <p class="note"><b>The backend is now Rust and the shell is Tauri.</b> The flows, trust boundaries and constants below still hold; file and package names are from the Electron days (v0.1.39), mapped here.</p>
+      <table>
+        <thead><tr><th>Electron</th><th>Rust / Tauri</th></tr></thead>
+        <tbody>
+          <tr><td class="k">main/index.ts</td><td class="k">core/apps/desktop/src/main.rs</td></tr>
+          <tr><td class="k">main/ipc/*</td><td class="k">core/crates/wb-core/src/ (one module per channel group)</td></tr>
+          <tr><td class="k">main/remote/*</td><td class="k">core/crates/wb-core/src/remote/</td></tr>
+          <tr><td class="k">main/cowork/*</td><td class="k">core/crates/wb-core/src/cowork*.rs</td></tr>
+          <tr><td class="k">main/memsync/*</td><td class="k">core/crates/wb-core/src/memsync.rs</td></tr>
+          <tr><td class="k">node-pty, @xterm/headless</td><td class="k">wb-pty (portable-pty, alacritty_terminal)</td></tr>
+          <tr><td class="k">safeStorage</td><td class="k">wb-secrets (DPAPI; reads old safeStorage values once)</td></tr>
+          <tr><td class="k">electron-updater</td><td class="k">tauri-plugin-updater, signature required</td></tr>
+          <tr><td class="k">&lt;webview&gt;</td><td class="k">native child webviews with no IPC (src/desktop/platform.ts)</td></tr>
+        </tbody>
+      </table>
       <p class="principle">
         <b>Official CLIs own the agent runtime.</b> The workbench provides editing, Git, terminals,
         shared memory and Cowork coordination, scheduling CLI calls and explicitly approved project work. Cross-CLI hand-off goes

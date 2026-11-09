@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Agent Workbench",
+  "version": "../../../package.json",
+  "identifier": "io.github.zkylek1212-k.agent-workbench",
+  "build": { "frontendDist": "../../../out/desktop" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": { "resources/plugins/": "plugins/" },
+    "icon": ["../../../build/icon.ico", "../../../build/icon.png"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser", "installerHooks": "installer-hooks.nsh" }
+    }
+  }
+}

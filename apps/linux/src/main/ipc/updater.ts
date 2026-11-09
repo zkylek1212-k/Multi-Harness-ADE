@@ -2,9 +2,9 @@ import { app, ipcMain, shell, BrowserWindow } from 'electron'
 import { loadSettings } from './settings'
 import type { UpdaterStatus, UpdateInfo } from '../../preload/index'
 
-const RELEASES = 'https://github.com/zkylek1212-k/Mulit-Harness-ADE/releases'
+const RELEASES = 'https://github.com/zkylek1212-k/Multi-Harness-ADE/releases'
 // ponytail: scans 100 recent releases; paginate if Windows history hides the Linux release.
-const API = 'https://api.github.com/repos/zkylek1212-k/Mulit-Harness-ADE/releases?per_page=100'
+const API = 'https://api.github.com/repos/zkylek1212-k/Multi-Harness-ADE/releases?per_page=100'
 
 // Linux releases stay prereleases so Windows /releases/latest never selects them.
 export function selectLinuxRelease(releases: unknown, currentVersion: string): UpdateInfo | undefined {

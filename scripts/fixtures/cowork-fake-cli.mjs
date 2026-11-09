@@ -1,7 +1,8 @@
 // 假的 claude / codex：給 scripts/check-cowork.mts 用，輸出格式照 2026-10-07 實測的真 CLI。
 // 參數有 exec 就扮 codex（事件 JSONL + -o 檔），否則扮 claude（單一 result 物件）。
 // 行為由環境變數 FAKE_COWORK（JSON）控制，見下方 cfg 的欄位。
-import { writeFileSync, appendFileSync } from 'node:fs'
+import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
 const argv = process.argv.slice(2)
@@ -28,7 +29,7 @@ if (isAgy) {
   }
 }
 
-const step = (prompt.match(/^Cowork step: (\S+)/m) || [])[1]
+const step = (prompt.match(/^Cowork step: (\S+)/m) || [])[1] || (prompt.startsWith('Cowork post-implementation review') ? 'Review' : undefined)
 // 記下每次呼叫：誰、哪一步、收到的參數（測模型與強度有沒有傳對）
 if (cfg.logFile) appendFileSync(cfg.logFile, JSON.stringify({ me, step, argv, head: prompt.slice(0, 4000) }) + '\n')
 
@@ -46,14 +47,29 @@ if (!step) {
       writeFileSync(join(process.cwd(), `${task}.txt`), `${me} did ${task} (pid ${process.pid})\n`)
       if (cfg.execStray) writeFileSync(join(process.cwd(), 'stray.txt'), `${me} strayed in ${task}\n`)
       if (cfg.execConflict) writeFileSync(join(process.cwd(), 'shared.txt'), `${task}\n`)
-    } else {
+      // agent 想動 git 的執行點：改 tracked hook、植入 post-merge、改 repo 設定
+      if (cfg.execTamperHook) {
+        mkdirSync(join(process.cwd(), '.githooks'), { recursive: true })
+        writeFileSync(join(process.cwd(), '.githooks', 'pre-commit'), `#!/bin/sh\necho TAMPERED-pre-commit >> "${cfg.execTamperHook}"\n`)
+        writeFileSync(join(process.cwd(), '.githooks', 'post-merge'), `#!/bin/sh\necho PLANTED-post-merge >> "${cfg.execTamperHook}"\n`)
+      }
+      if (cfg.execTamperConfig) execFileSync('git', ['config', 'core.fsmonitor', cfg.execTamperConfig], { cwd: process.cwd() })
+    } else if (!prompt.startsWith('Cowork ')) {
+      // Cowork 自己的追問（完成條件沒過）不寫檔；使用者的追問才會
       appendFileSync(join(process.cwd(), 'followup.txt'), `${me}: ${prompt.slice(0, 60)}\n`)
     }
   }
-  const resultBlock = cfg.execResult && task
-    ? `\n\n\`\`\`cowork-result\n${JSON.stringify({ interfaces: [`${task}.txt holds the marker`], verified: ['npm test -> pass'], unverified: ['Windows paths'], notes: `note from ${task}` })}\n\`\`\``
+  // 逐項回報驗收：第一次交辦照 prompt 說的項數；被追問時看 prompt 列出哪些沒過
+  const asked = Number((prompt.match(/must report every one of the (\d+) numbered/) || [])[1] || 0)
+  const gaps = prompt.startsWith('Cowork completion check') ? [...prompt.matchAll(/^#(\d+) /gm)].map((m) => Number(m[1])) : []
+  const skip = cfg.execSkipAcceptance && !(gaps.length && cfg.fixOnFollowUp)
+  const items = gaps.length ? gaps : Array.from({ length: asked }, (_, i) => i + 1)
+  const acceptance = !skip && items.length ? { acceptance: items.map((item) => ({ item, status: 'done', evidence: 'fake evidence' })) } : {}
+  const wantBlock = (cfg.execResult && task) || Object.keys(acceptance).length
+  const resultBlock = wantBlock
+    ? `\n\n\`\`\`cowork-result\n${JSON.stringify({ ...(cfg.execResult && task ? { interfaces: [`${task}.txt holds the marker`], verified: ['npm test -> pass'], unverified: ['Windows paths'], notes: `note from ${task}` } : {}), ...acceptance })}\n\`\`\``
     : ''
-  const reply = failed ? '' : task ? `Done ${task}.${resultBlock}` : `Follow-up done.`
+  const reply = failed ? '' : task ? `Done ${task}.${resultBlock}` : `Follow-up done.${resultBlock}`
   const ev = (e) => process.stdout.write(JSON.stringify(e) + '\n')
   const file = join(process.cwd(), task ? `${task}.txt` : 'followup.txt')
   if (isCodex) {
@@ -73,6 +89,11 @@ if (!step) {
   } else {
     ev({ type: 'system', subtype: 'init', session_id: sid, model: 'fake-model' })
     ev({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: file } }] } })
+    // 失控：同一個呼叫一直失敗
+    for (let i = 0; i < (cfg.execLoop || 0); i++) {
+      ev({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `u${i}`, name: 'Bash', input: { command: 'npm test' } }] } })
+      ev({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `u${i}`, is_error: true }] } })
+    }
     ev({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: !!failed, result: reply || 'fake exec failure', session_id: sid, total_cost_usd: 0.02, usage: { input_tokens: 5, output_tokens: 3 } })
   }
   process.exit(failed ? 1 : 0)
@@ -122,6 +143,17 @@ if (step === 'Discussion') {
   out = { summary: `Recorded ${messages.map((m) => m.id).join(', ')}; preserve EARLY_REQUIREMENT.`, consensus: ['Use the agreed approach'], disagreements: ['Claude prefers option B'], questions: ['User must approve execution'] }
 } else if (step === 'Conclusion') {
   out = { message: 'Chair recommends the recorded approach. EARLY_REQUIREMENT remains required; user approval is needed before execution.', replyTo: null }
+} else if (step === 'Review') {
+  if (cfg.reviewWrite) writeFileSync(join(process.cwd(), 'reviewer-was-here.txt'), 'x')
+  if (cfg.reviewFail) {
+    process.stderr.write('fake review failure\n')
+    process.exit(1)
+  }
+  out = {
+    message: `${me} reviewed the diff.`,
+    verdict: cfg.reviewVerdict || 'pass',
+    findings: cfg.reviewHigh ? [{ severity: 'high', file: 't1.txt', line: 1, problem: 'seeded defect', evidence: 'line 1' }] : []
+  }
 } else if (step === 'R1') {
   out =
     cfg.invalidOnce && !repair

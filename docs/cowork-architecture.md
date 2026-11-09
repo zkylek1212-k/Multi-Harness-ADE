@@ -43,14 +43,14 @@ A chair conclusion records which messages it covers. Further discussion makes it
 
 ## Persistence and recovery / 保存與恢復
 
-Meetings and their artifacts live under Electron `userData/cowork`, grouped by repository and run. JSON manifests are atomically replaced, with a previous-file fallback. Project-planning snapshots are managed separately from execution worktrees; approved execution worktrees live in `<repo>/.cowork/<runId>/`. Persisted meetings can be reopened from history after restart. UI tabs and unsent drafts are session-local. Closing a tab does not cancel a run; cancellation is explicit. Interrupted calls require recovery/retry rather than silently replaying paid work.
+Meetings and their artifacts live under `userData/cowork`, grouped by repository and run. JSON manifests are atomically replaced, with a previous-file fallback. Project-planning snapshots are managed separately from execution worktrees; approved execution worktrees live in `<repo>/.cowork/<runId>/`. Persisted meetings can be reopened from history after restart. UI tabs and unsent drafts are session-local. Closing a tab does not cancel a run; cancellation is explicit. Interrupted calls require recovery/retry rather than silently replaying paid work.
 
-會議及相關資料保存在 Electron `userData/cowork`，依 repository 與會議分組；JSON 原子替換並保留前一份備援。規劃快照與執行 worktree 分開管理，核准後執行位於 `<repo>/.cowork/<runId>/`。重新啟動後可從歷史開啟紀錄，分頁與未送出草稿僅限本次程式執行。關閉分頁不取消會議，中斷呼叫需恢復／重試，不會默默重做付費呼叫。
+會議及相關資料保存在 `userData/cowork`，依 repository 與會議分組；JSON 原子替換並保留前一份備援。規劃快照與執行 worktree 分開管理，核准後執行位於 `<repo>/.cowork/<runId>/`。重新啟動後可從歷史開啟紀錄，分頁與未送出草稿僅限本次程式執行。關閉分頁不取消會議，中斷呼叫需恢復／重試，不會默默重做付費呼叫。
 
 ## Verification / 驗證
 
 - `node --experimental-strip-types scripts/check-cowork.mts`: fake-CLI orchestration, validation, summary coverage, budgets, cancellation/recovery, concurrent meetings and execution scheduling.
-- `node_modules/.bin/electron scripts/check-cowork-tabs.cjs`: real renderer with mocked IPC, tab independence, records/conclusions, conversion and settings/layout across languages and themes.
-- `node_modules/.bin/electron scripts/check-terminal-ui.cjs`: terminal, IME, mobile output and alert regressions.
+- `node scripts/check-cowork-tabs.cjs`: real renderer with mocked IPC, tab independence, records/conclusions, conversion and settings/layout across languages and themes.
+- `node scripts/check-terminal-ui.cjs`: terminal, IME, mobile output and alert regressions.
 
 The new discussion/summary automated checks use fake CLIs. Real-provider response quality, quota errors and latency require live use; the interface exposes public replies and process timings to make that behavior visible.

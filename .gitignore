@@ -28,3 +28,11 @@ node_modules
 
 # 本機稽核草稿，不進版控
 issue.md
+
+# Rust core build output
+core/apps/prototype/dist/
+core/apps/prototype/gen/
+core/apps/prototype/icons/
+core/target/
+
+build/bin/

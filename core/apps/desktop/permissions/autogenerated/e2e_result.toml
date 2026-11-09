@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-e2e-result"
+description = "Enables the e2e_result command without any pre-configured scope."
+commands.allow = ["e2e_result"]
+
+[[permission]]
+identifier = "deny-e2e-result"
+description = "Denies the e2e_result command without any pre-configured scope."
+commands.deny = ["e2e_result"]

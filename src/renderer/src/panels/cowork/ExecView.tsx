@@ -6,8 +6,10 @@ import AppleAlertDialog from '@/components/AppleAlertDialog'
 import {
   agentLabel,
   currentBoard,
+  mergeBlockers,
   touchesDependencies,
   type CoworkExecMode,
+  type ExecPreview,
   type CoworkResult,
   type CoworkRun,
   type CoworkTask,
@@ -26,14 +28,25 @@ const mmss = (ms: number): string => {
 export function ExecLauncher({ run, t, act, onChangePlan }: { run: CoworkRun; t: T; act: Act; onChangePlan: () => void }): JSX.Element {
   const [mode, setMode] = useState<CoworkExecMode>('sequential')
   const [linkDeps, setLinkDeps] = useState(true)
-  const [bypass, setBypass] = useState<boolean | null>(null)
+  const [preview, setPreview] = useState<ExecPreview | null>(null)
+  const [tick, setTick] = useState(0)
   const [busy, setBusy] = useState(false)
+  const bypass = preview ? preview.bypass : null
+  const unresolved = (preview?.checks || []).filter((c) => c.error)
   const agents = [...new Set((currentBoard(run)?.tasks || []).map((x) => x.assignee))]
   const depTasks = (currentBoard(run)?.tasks || []).filter((x) => touchesDependencies(x.scope)).map((x) => x.id)
 
+  // 看到的內容就是要核准的內容：hash 由 main 算，開始時重新核對
   useEffect(() => {
-    window.api.cowork.bypass().then((r) => setBypass(r.ok ? r.data : null))
-  }, [])
+    let live = true
+    setPreview(null)
+    window.api.cowork.execPreview(run.id, { mode, linkDeps }).then((r) => {
+      if (live && r.ok) setPreview(r.data)
+    })
+    return () => {
+      live = false
+    }
+  }, [run.id, run.planRevision, mode, linkDeps, tick])
 
   const options: { id: CoworkExecMode; title: string; desc: string }[] = [
     { id: 'sequential', title: t('cowork.execSequential'), desc: t('cowork.execSequentialDesc') },
@@ -67,14 +80,35 @@ export function ExecLauncher({ run, t, act, onChangePlan }: { run: CoworkRun; t:
       <div className={`cw-exec-perm ${bypass ? 'bypass' : ''}`}>
         {bypass === null ? '' : bypass ? t('cowork.execBypassOn') : t('cowork.execBypassOff')}
       </div>
+      {!!preview?.checks.length && (
+        <div className="cw-exec-checks">
+          <div className="cw-field-label">{t('cowork.execChecksTitle')}</div>
+          {preview.checks.map((c, i) => (
+            <div key={i} className="cw-muted small">
+              {c.taskId || t('cowork.execChecksShared')}: <code>{c.argv.join(' ')}</code>
+              {c.resolved && c.resolved !== c.argv[0] ? <> → <code>{c.resolved}</code></> : null}
+              {c.error ? <span role="alert"> ({c.error})</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {!!preview?.warnings.length && (
+        <div className="cw-muted small">
+          {preview.warnings.filter((w) => w !== 'bypass-on').map((w) => (
+            <div key={w}>{t(`cowork.execWarn_${w}`, { path: preview.worktreeRoot })}</div>
+          ))}
+        </div>
+      )}
       <div className="cw-turn-actions">
         <button
           type="button"
           className="cw-btn primary"
-          disabled={busy}
+          disabled={busy || !preview || unresolved.length > 0}
           onClick={async () => {
+            if (!preview) return
             setBusy(true)
-            await act(window.api.cowork.execStart(run.id, { mode, linkDeps }))
+            await act(window.api.cowork.execStart(run.id, { mode, linkDeps, approval: preview.hash }))
+            setTick((n) => n + 1)
             setBusy(false)
           }}
         >
@@ -135,6 +169,7 @@ function ExecTaskCard({
 }): JSX.Element {
   const ex = run.execution!
   const wt = ex.worktrees[te.worktree]
+  const [waiveReason, setWaiveReason] = useState('')
   const canTalk = !ex.cleaned && (run.phase === 'executing' || run.phase === 'review')
   const canRetry = canTalk && ['failed', 'blocked', 'cancelled'].includes(te.status)
   return (
@@ -208,15 +243,43 @@ function ExecTaskCard({
             <button type="button" className="cw-btn sm" onClick={() => act(window.api.cowork.execRevertScope(run.id, task.id))}>
               {t('cowork.scopeRevert')}
             </button>
-            <button type="button" className="cw-btn sm" onClick={() => act(window.api.cowork.execAcceptScope(run.id, task.id))}>
+            <button type="button" className="cw-btn sm" onClick={() => act(window.api.cowork.execAcceptScope(run.id, task.id, te.scopeReview?.hash))}>
               {t('cowork.scopeAccept')}
             </button>
           </div>
         </div>
       )}
+      {te.status === 'blocked' && te.gate && canTalk && (
+        <div className="cw-scope-review" role="alert">
+          <div className="cw-field-label">{t(`cowork.gateTitle_${te.gate.kind}`)}</div>
+          <pre className="cw-exec-stat">{te.gate.items.join('\n')}</pre>
+          <input className="cw-input" value={waiveReason} placeholder={t('cowork.waivePlaceholder')} onChange={(e) => setWaiveReason(e.target.value)} />
+          <div className="cw-task-actions">
+            <button
+              type="button"
+              className="cw-btn sm"
+              disabled={!waiveReason.trim()}
+              onClick={() =>
+                act(te.gate?.kind === 'git-config' ? window.api.cowork.execWaiveGitConfig(run.id, task.id, waiveReason) : window.api.cowork.execWaive(run.id, task.id, waiveReason))
+              }
+            >
+              {t('cowork.waiveAccept')}
+            </button>
+          </div>
+        </div>
+      )}
+      {te.waiver && <div className="cw-muted small">{t('cowork.waived', { reason: te.waiver.reason })}</div>}
+      {!!te.checkRuns?.length && (
+        <div className="cw-muted small">
+          {te.checkRuns.map((c, i) => (
+            <div key={i}>{c.ok ? '✓' : '✗'} <code>{c.argv.join(' ')}</code></div>
+          ))}
+        </div>
+      )}
+      {!te.checkRuns?.length && run.execution?.gates && te.status === 'done' && !te.waiver && <div className="cw-muted small">{t('cowork.agentReportedOnly')}</div>}
       {(canTalk || canRetry) && te.status !== 'running' && te.status !== 'pending' && (
         <div className="cw-task-actions">
-          {canTalk && (te.status !== 'blocked' || !!te.scopeReview) && (
+          {canTalk && (te.status !== 'blocked' || !!te.scopeReview || !!te.gate) && (
             <button type="button" className="cw-btn sm" onClick={() => onFollowUp(task.id)}>
               {t('cowork.execFollowUp')}
             </button>
@@ -279,6 +342,7 @@ export function ExecTurnCard({ run, t, act }: { run: CoworkRun; t: T; act: Act }
   const ex = run.execution
   const ref = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState(false)
+  const [mergeWaive, setMergeWaive] = useState('')
   const [confirmCleanup, setConfirmCleanup] = useState(false)
   useEffect(() => {
     if (run.phase === 'review') ref.current?.focus()
@@ -293,6 +357,7 @@ export function ExecTurnCard({ run, t, act }: { run: CoworkRun; t: T; act: Act }
     await act(p)
     setBusy(false)
   }
+  const blockers = mergeBlockers(ex)
   const cleanupBtn = !ex.cleaned && (
     <>
     <button
@@ -356,9 +421,49 @@ export function ExecTurnCard({ run, t, act }: { run: CoworkRun; t: T; act: Act }
         )}
         {ok && it?.stat && <pre className="cw-exec-stat">{it.stat}</pre>}
         {!ok && it?.message && <div className="cw-turn-detail">{it.message}</div>}
+        {ok && ex.gates && (
+          <div className="cw-turn-desc">
+            <div>{t(`cowork.intChecks_${it?.checks || 'none'}`)}</div>
+            {(it?.checkRuns || []).map((c, i) => (
+              <div key={i} className="cw-muted small">{c.ok ? '✓' : '✗'} <code>{c.argv.join(' ')}</code>{c.error ? ` (${c.error})` : ''}</div>
+            ))}
+            {ex.targetCheck && <div>{t(`cowork.targetCheck_${ex.targetCheck.status}`, { branch: run.repo.sourceBranch })}</div>}
+          </div>
+        )}
+        {ok && ex.review && (
+          <div className="cw-turn-desc">
+            <div className="cw-field-label">
+              {t('cowork.reviewTitle', { agent: ex.review.agent ? agentLabel(ex.review.agent) : '-' })}
+              {ex.review.independence ? ` · ${t(`cowork.reviewIndep_${ex.review.independence}`)}` : ''}
+            </div>
+            <div className="cw-muted small">{t('cowork.reviewAdvisory')}</div>
+            {ex.review.status === 'failed' && <div>{t('cowork.reviewFailed', { error: ex.review.error || '' })}</div>}
+            {ex.review.truncated && <div>{t('cowork.reviewTruncated')}</div>}
+            {ex.review.verdict && <div>{t(`cowork.reviewVerdict_${ex.review.verdict}`)}</div>}
+            {ex.review.message && <div className="cw-turn-detail">{ex.review.message}</div>}
+            {ex.review.findings.map((f, i) => (
+              <div key={i} className="small">
+                <b>{f.severity}</b> <code>{f.file}{f.line ? `:${f.line}` : ''}</code> {f.problem}
+                {f.evidence ? <div className="cw-muted small">{f.evidence}</div> : null}
+              </div>
+            ))}
+          </div>
+        )}
+        {ok && blockers.length > 0 && (
+          <div className="cw-scope-review" role="alert">
+            <div className="cw-field-label">{t('cowork.mergeBlockers')}</div>
+            <pre className="cw-exec-stat">{blockers.join('\n')}</pre>
+            <input className="cw-input" value={mergeWaive} placeholder={t('cowork.waivePlaceholder')} onChange={(e) => setMergeWaive(e.target.value)} />
+          </div>
+        )}
         <div className="cw-turn-actions">
           {ok && (
-            <button type="button" className="cw-btn primary" disabled={busy} onClick={() => run1(window.api.cowork.execMerge(run.id))}>
+            <button
+              type="button"
+              className="cw-btn primary"
+              disabled={busy || (blockers.length > 0 && !mergeWaive.trim()) || ex.targetCheck?.status === 'conflict'}
+              onClick={() => run1(window.api.cowork.execMerge(run.id, { commit: it?.commit || '', targetHead: ex.targetHead || '', ...(mergeWaive.trim() ? { waive: mergeWaive.trim() } : {}) }))}
+            >
               {t('cowork.execMerge', { branch: run.repo.sourceBranch })}
             </button>
           )}

@@ -205,6 +205,27 @@ export default function CoworkSettings({ value, onChange }: { value: unknown; on
                 </label>
               </div>
             </div>
+            <div className="macos-row">
+              <div className="macos-row-left">
+                <span className="macos-row-title">{t('settings.coworkExecReview')}</span>
+                <span className="macos-row-sub">{t('settings.coworkExecReviewSub')}</span>
+              </div>
+              <div className="macos-row-right">
+                <label className="apple-toggle">
+                  <input type="checkbox" checked={cw.execReview} onChange={(e) => onChange({ ...cw, execReview: e.target.checked })} />
+                  <span className="apple-toggle-slider" />
+                </label>
+              </div>
+            </div>
+            <div className="macos-row">
+              <div className="macos-row-left">
+                <span className="macos-row-title">{t('settings.coworkWorktreeRoot')}</span>
+                <span className="macos-row-sub">{t('settings.coworkWorktreeRootSub')}</span>
+              </div>
+              <div className="macos-row-right">
+                <input type="text" value={cw.worktreeRoot} placeholder=".cowork" onChange={(e) => onChange({ ...cw, worktreeRoot: e.target.value })} />
+              </div>
+            </div>
           </div>
         </div>
       </div>

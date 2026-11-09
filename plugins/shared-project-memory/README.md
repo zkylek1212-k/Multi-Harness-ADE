@@ -95,8 +95,8 @@ so the handoff is never loaded twice.
 ### Claude Code (without Agent Workbench)
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-claude plugin marketplace add ./Mulit-Harness-ADE/plugins/shared-project-memory
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+claude plugin marketplace add ./Multi-Harness-ADE/plugins/shared-project-memory
 claude plugin install shared-project-memory@shared-project-memory
 ```
 
@@ -109,9 +109,9 @@ Then, in any project:
 ### Codex / Antigravity / by hand (no Claude Code required)
 
 ```bash
-git clone https://github.com/zkylek1212-k/Mulit-Harness-ADE.git
-bash Mulit-Harness-ADE/plugins/shared-project-memory/install.sh            # into the current repo
-bash Mulit-Harness-ADE/plugins/shared-project-memory/install.sh /my/repo   # into a specific repo
+git clone https://github.com/zkylek1212-k/Multi-Harness-ADE.git
+bash Multi-Harness-ADE/plugins/shared-project-memory/install.sh            # into the current repo
+bash Multi-Harness-ADE/plugins/shared-project-memory/install.sh /my/repo   # into a specific repo
 ```
 
 Windows PowerShell:
@@ -130,7 +130,7 @@ Both paths run the same `scripts/init-memory.sh`, produce identical results, and
 Install the plugin folder of a clone as a local marketplace:
 
 ```bash
-codex plugin marketplace add ./Mulit-Harness-ADE/plugins/shared-project-memory
+codex plugin marketplace add ./Multi-Harness-ADE/plugins/shared-project-memory
 codex plugin add shared-project-memory@shared-project-memory
 ```
 
@@ -141,7 +141,7 @@ the existing project-scoped installer after checking the Git repository and exis
 ### Antigravity plugin
 
 ```bash
-agy plugin install ./Mulit-Harness-ADE/plugins/shared-project-memory
+agy plugin install ./Multi-Harness-ADE/plugins/shared-project-memory
 ```
 
 Antigravity runs the root `hooks.json` (SessionStart → `node scripts/session-start.js --antigravity`,
