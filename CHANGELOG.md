@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-11-09
 
 ### Changed / 變更
 - Windows 版改用 Tauri 與 Rust 後端，不再使用 Electron。介面與手機頁面不變，設定、會議紀錄與已配對的手機會沿用。
@@ -13,6 +13,8 @@
 - 0.1.x does not auto-update to this version. Download and install it by hand; the installer removes the old version and keeps your data.
 - 之後的更新改用簽章驗證。
 - Updates from here on are signature-checked.
+- 裝了 0.2.0 之後不要再裝回 0.1.x：舊版讀不到 0.2.0 重新加密的遠端控制與連線金鑰。
+- After installing 0.2.0, do not go back to 0.1.x: it cannot read the remote control and connection keys 0.2.0 re-encrypts.
 
 ## [0.1.48] - 2026-11-06
 
