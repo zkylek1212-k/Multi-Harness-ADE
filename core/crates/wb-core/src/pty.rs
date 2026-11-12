@@ -15,6 +15,7 @@ use crate::conn::resolve_connection_env;
 use crate::core::{arg_str, Core};
 use crate::custom_agent::{sanitize_custom_agent, CUSTOM_AGENT_ID};
 use crate::paths::find_cli;
+use crate::settings::{effective_proxy, proxy_snapshot};
 use crate::util::{exists, home, now_ms, p, read_text, sv, uuid};
 
 const TAIL_LIMIT: usize = 16 * 1024;
@@ -225,9 +226,41 @@ fn builtin_title(cmd: &str) -> Option<&'static str> {
 const KNOWN_CLI: [&str; 7] = ["claude", "codex", "antigravity", "powershell", "pwsh", "cmd", "bash"];
 
 fn blocked_env(k: &str) -> bool {
+    if is_proxy_key(k) {
+        return true;
+    }
     static R: OnceLock<Regex> = OnceLock::new();
     // These can inject code into someone else's process, even a genuine official CLI, so a yaml file may not set them
     R.get_or_init(|| Regex::new(r"(?i)^(NODE_OPTIONS|NODE_REPL_EXTERNAL_MODULE|PATH|LD_PRELOAD|LD_AUDIT|LD_LIBRARY_PATH|DYLD_.*|PYTHONPATH|PYTHONSTARTUP|PERL5OPT|RUBYOPT|ELECTRON_RUN_AS_NODE|BASH_ENV|ENV)$").unwrap()).is_match(k)
+}
+
+fn is_proxy_key(key: &str) -> bool {
+    key.to_ascii_uppercase().ends_with("_PROXY")
+}
+
+fn apply_proxy_env(env: &mut Vec<(String, String)>, proxy: &Value, password: &str) {
+    let mode = proxy["mode"].as_str().unwrap_or("inherit");
+    if mode == "inherit" {
+        return;
+    }
+    env.retain(|(key, _)| !is_proxy_key(key));
+    if mode == "direct" {
+        return;
+    }
+    let mut address = proxy["url"].as_str().unwrap_or("").to_string();
+    let username = proxy["username"].as_str().unwrap_or("");
+    if !username.is_empty() || !password.is_empty() {
+        use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+        let credentials = format!("{}:{}@", utf8_percent_encode(username, NON_ALPHANUMERIC), utf8_percent_encode(password, NON_ALPHANUMERIC));
+        address.insert_str(address.find("://").unwrap() + 3, &credentials);
+    }
+    let bypass = [proxy["bypass"].as_str().unwrap_or(""), "localhost", "127.0.0.1", "::1"].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(",");
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+        env.push((key.into(), address.clone()));
+    }
+    for key in ["NO_PROXY", "no_proxy"] {
+        env.push((key.into(), bypass.clone()));
+    }
 }
 
 struct Launcher {
@@ -424,6 +457,14 @@ impl Core {
         }
         // Credentials enter here and nowhere else: MCP servers inherit them, so no agent config file ever holds one
         env.extend(resolve_connection_env(self));
+        let proxy = effective_proxy(&self.load_settings()["proxy"], o_launcher.or(o_cmd).unwrap_or("shell"));
+        let sealed = if proxy["mode"] == "custom" { self.proxy_sealed()? } else { Vec::new() };
+        let password = if sealed.is_empty() { String::new() } else {
+            let plain = wb_secrets::unprotect(&sealed).map_err(|_| "Could not decrypt proxy password")?;
+            String::from_utf8(plain).map_err(|_| "Invalid stored proxy password")?
+        };
+        apply_proxy_env(&mut env, &proxy, &password);
+        let proxy_started = proxy_snapshot(&proxy, &sealed);
         let is_agy = !is_custom && (target_agent.as_deref() == Some("antigravity") || command.to_lowercase().contains("agy") || o_cmd == Some("antigravity") || o_launcher == Some("antigravity"));
         if is_agy {
             // An IDE-only id is unknown to the CLI, which would print a warning
@@ -520,6 +561,7 @@ impl Core {
             }
         }
         let mut meta = json!({ "id": id, "command": o_cmd.or(o_launcher).unwrap_or("shell"), "startTime": now_ms() as u64, "pid": pid, "cwd": cwd, "args": args });
+        meta["proxy"] = proxy_started;
         if let Some(l) = o_launcher {
             meta["launcherId"] = json!(l);
         }
@@ -668,7 +710,7 @@ impl Core {
             "id": id, "title": e.title, "command": e.meta["command"], "launcherId": e.meta.get("launcherId"),
             "workspace": e.workspace, "ownerId": e.owner, "cwd": e.meta["cwd"], "startTime": e.meta["startTime"],
             "cols": l.cols, "rows": l.rows, "needsApproval": l.needs_approval, "lastOutputAt": l.last_output_ms as u64,
-            "busy": l.busy, "devPort": l.dev_port
+            "busy": l.busy, "devPort": l.dev_port, "proxy": e.meta.get("proxy")
         })
     }
 
@@ -794,6 +836,46 @@ mod tests {
         assert!(blocked_env("node_options"));
         assert!(blocked_env("DYLD_INSERT_LIBRARIES"));
         assert!(!blocked_env("MY_FLAG"));
+    }
+
+    #[test]
+    fn proxy_modes_preserve_or_replace_environment() {
+        let original = vec![("PATH".into(), "keep".into()), ("hTtP_pRoXy".into(), "old".into()), ("No_Proxy".into(), "*".into()), ("FTP_PROXY".into(), "old".into())];
+        let mut env = original.clone();
+        let mut proxy = crate::settings::sanitize_proxy(None).unwrap();
+        apply_proxy_env(&mut env, &proxy, "");
+        assert_eq!(env, original);
+        proxy["mode"] = json!("direct");
+        apply_proxy_env(&mut env, &proxy, "");
+        assert_eq!(env, vec![("PATH".into(), "keep".into())]);
+        let proxy = crate::settings::sanitize_proxy(Some(&json!({ "mode": "custom", "url": "socks5://[::1]:1080", "username": "a@b", "bypass": "internal.example" }))).unwrap();
+        env = original;
+        apply_proxy_env(&mut env, &proxy, "p:/密%");
+        assert_eq!(env.len(), 9);
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            assert_eq!(env.iter().find(|(k, _)| k == key).unwrap().1, "socks5://a%40b:p%3A%2F%E5%AF%86%25@[::1]:1080");
+        }
+        for key in ["NO_PROXY", "no_proxy"] {
+            assert_eq!(env.iter().find(|(k, _)| k == key).unwrap().1, "internal.example,localhost,127.0.0.1,::1");
+        }
+        let snapshot = crate::settings::proxy_snapshot(&proxy, b"sealed");
+        assert!(!snapshot.to_string().contains("a@b"));
+        assert!(!snapshot.to_string().contains("p:/"));
+        assert!(!snapshot.to_string().contains("sealed"));
+    }
+
+    #[test]
+    fn yaml_proxy_environment_is_filtered() {
+        let dir = std::env::temp_dir().join(format!("wb-proxy-yaml-{}", uuid()));
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(dir.join("agents/proxy.yaml"), "launcher:\n  id: proxy-test\n  cli: claude\n  env:\n    HTTP_PROXY: malicious\n    https_proxy: malicious\n    AlL_pRoXy: malicious\n    No_PrOxY: '*'\n    ftp_proxy: malicious\n    MY_FLAG: safe\n").unwrap();
+        let launchers = read_launchers(dir.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(launchers.len(), 1);
+        assert_eq!(launchers[0].env, vec![("MY_FLAG".into(), "safe".into())]);
+        for key in ["http_proxy", "hTTps_pROXY", "All_Proxy", "NO_PROXY", "ftp_proxy"] {
+            assert!(blocked_env(key));
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ import CoworkSettings from './CoworkSettings'
 import MemorySyncSettings from './MemorySyncSettings'
 import MemoryPluginPrompt from './MemoryPluginPrompt'
 import CustomAgentSettings from './CustomAgentSettings'
+import ProxySettings from './ProxySettings'
 import {
   IconSun,
   IconMoon,
@@ -35,7 +36,7 @@ import type { SettingsTab } from '@/store'
 interface SettingsModalProps {
   isOpen: boolean
   onClose: () => void
-  initialTab?: SettingsTab
+  initialTab?: SettingsTab | 'proxy'
 }
 
 interface TestResult {
@@ -181,7 +182,7 @@ export default function SettingsModal({
 }: SettingsModalProps): JSX.Element | null {
   const { theme, uiMode } = useWorkbench()
   const { t, language, setLanguage } = useTranslation()
-  const [tab, setTab] = useState<SettingsTab>(initialTab || 'appearance')
+  const [tab, setTab] = useState<SettingsTab | 'proxy'>(initialTab || 'appearance')
   const [settings, setSettings] = useState<WorkbenchSettings>({
     cliPaths: { claude: '', antigravity: '', codex: '', powershell: '', cmd: '' },
     cliEnabled: { claude: true, antigravity: true, codex: true, powershell: true, cmd: true },
@@ -769,6 +770,10 @@ export default function SettingsModal({
           </div>
 
           <nav className="macos-sidebar-nav">
+            <button type="button" className={`macos-sidebar-item ${tab === 'proxy' ? 'active' : ''}`} onClick={() => setTab('proxy')}>
+              <div className="macos-icon-squircle" style={{ background: 'var(--morandi-green)' }}><IconShield size={14} /></div>
+              <span className="macos-sidebar-item-text">{t('proxy.title')}</span>
+            </button>
             <button
               type="button"
               className={`macos-sidebar-item ${tab === 'appearance' ? 'active' : ''}`}
@@ -1547,6 +1552,11 @@ export default function SettingsModal({
             </>
           )}
 
+          {tab === 'proxy' && <>
+            <div className="macos-settings-header"><h2 className="macos-settings-title">{t('proxy.title')}</h2></div>
+            <ProxySettings value={settings.proxy} onChange={proxy => setSettings(prev => ({ ...prev, proxy }))} />
+          </>}
+
           {tab === 'remote' && (
             <>
               <div className="macos-settings-header">
@@ -1879,6 +1889,8 @@ export default function SettingsModal({
             <span className="macos-footer-hint">
               {saveError ? (
                 <span style={{ color: '#ef4444', fontWeight: 500 }}>⚠️ {saveError}</span>
+              ) : tab === 'proxy' ? (
+                t('proxy.scope')
               ) : tab === 'cli' ? (
                 t('settings.footerCliHint')
               ) : tab === 'doctools' ? (

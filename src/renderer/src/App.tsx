@@ -12,6 +12,7 @@ import Splitter from '@/components/Splitter'
 import VibeRail from '@/components/VibeRail'
 import VibeUsageBar from '@/components/VibeUsageBar'
 import RemoteIndicator from '@/components/RemoteIndicator'
+import { ProxyStatusPill } from '@/components/ProxySettings'
 import {
   IconSidebarCollapse,
   IconSidebarExpand,
@@ -83,6 +84,7 @@ export default function App(): JSX.Element {
   const activeSidebarTab = isVibe ? 'dashboard' : sidebarTab
   const [center, setCenter] = useState<CenterTab>(isVibe ? 'browser' : 'editor')
   const [browserOpened, setBrowserOpened] = useState(false)
+  const [proxySettingsOpen, setProxySettingsOpen] = useState(false)
   const { t } = useTranslation()
 
   useEffect(() => {
@@ -468,6 +470,7 @@ export default function App(): JSX.Element {
           )}
 
           <RemoteIndicator />
+          <ProxyStatusPill onClick={() => { setProxySettingsOpen(true); openSettings() }} />
 
           {/* Vibe 模式的設定鈕在左側圖示列最下方 */}
           {!isVibe && (
@@ -631,8 +634,8 @@ export default function App(): JSX.Element {
 
       <SettingsModal
         isOpen={settingsModal.isOpen}
-        onClose={closeSettings}
-        initialTab={settingsModal.tab}
+        onClose={() => { setProxySettingsOpen(false); closeSettings() }}
+        initialTab={proxySettingsOpen ? 'proxy' : settingsModal.tab}
       />
     </div>
   )

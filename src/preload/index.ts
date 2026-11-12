@@ -87,6 +87,9 @@ const api = {
   },
   // 設定管理（CLI 路徑等）—— main/ipc/settings.ts
   settings: {
+    proxyPassword: (password: string): Promise<void> => ipcRenderer.invoke('settings:proxyPassword', password),
+    proxyStatus: (): Promise<ProxyStatus> => ipcRenderer.invoke('settings:proxyStatus'),
+    testProxy: (url: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('settings:testProxy', url),
     get: (): Promise<WorkbenchSettings> => ipcRenderer.invoke('settings:get'),
     set: (patch: Partial<WorkbenchSettings>): Promise<WorkbenchSettings> =>
       ipcRenderer.invoke('settings:set', patch),
@@ -420,7 +423,21 @@ export interface CliTestRecord {
   testedPath?: string
 }
 
+export type ProxyMode = 'inherit' | 'custom' | 'direct'
+export interface ProxyConfig {
+  mode: ProxyMode
+  url: string
+  username: string
+  bypass: string
+  agents: Record<string, ProxyMode>
+}
+export interface ProxyStatus {
+  passwordSaved: boolean
+  sessions: { id: string; agent: string; started: { mode: ProxyMode; url?: string }; restartNeeded: boolean }[]
+}
+
 export interface WorkbenchSettings {
+  proxy?: ProxyConfig
   customAgent?: CustomAgentConfig
   cliPaths: {
     claude?: string
