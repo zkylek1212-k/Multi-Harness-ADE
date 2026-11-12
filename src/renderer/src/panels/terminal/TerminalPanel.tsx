@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
+import type { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import './terminal.css'
 import {
@@ -14,9 +13,10 @@ import {
 } from '@/store'
 import type { DraggedSessionPayload } from '@/store'
 import { useTranslation } from '@/i18n'
-import { looksLikeApprovalPrompt, readApprovalScreen } from './approvalDetect'
 import { detectDevUrl } from './portDetect'
-import { focusTerm, isComposing, isImeKey, trackComposition } from './imeGuard'
+import { focusTerm, isComposing } from './imeGuard'
+import { createTerminalSession } from './terminalSession'
+import type { TerminalSession as TermSession } from './terminalSession'
 import AgentMark from '@/components/AgentMark'
 import CoworkPanel from '@panels/cowork/CoworkPanel'
 import type { CoworkAgent, CoworkPhase } from '../../../../shared/cowork'
@@ -55,22 +55,15 @@ interface TerminalSession {
   launcherKey: string
   args?: string[]
   term: Terminal
-  fitAddon: FitAddon
+  /** xterm 與 PTY 的綁定（terminalSession.ts）；關分頁時 kill 由這裡自己送 */
+  ts: TermSession
   ptyId?: string
-  disposables: (() => void)[]
   isExited: boolean
   needsApproval: boolean
   associatedSessionId?: string
   cwd?: string
   /** 開分頁當下所屬的工作區（cwd 有指定時就是 cwd）：切換工作區時找回該專案最後用的分頁 */
   workspace?: string
-  /**
-   * 是否已經 spawn 過 pty 並掛上輸入／輸出 handler。
-   * 這個旗標必須放在 session 物件上，不能放元件的 ref：TermInstance 一旦 remount
-   * （版面／停靠／分割變動）ref 會歸零，就會對同一個 term 再 spawn 一次、再掛一組
-   * onData——之後每敲一個字會送進兩個 pty、兩邊都回顯，畫面上就是每個字重複兩次。
-   */
-  bootstrapped?: boolean
   /** 手機遠端開的終端：pty 已在 main 跑著，只要 attach、不要再 spawn */
   attachPtyId?: string
 }
@@ -391,6 +384,8 @@ export default function TerminalPanel(): JSX.Element {
   // 讓非同步的送出流程讀得到最新 sessions（ptyId 是 spawn 後才填的）
   const sessionsRef = useRef<TerminalSession[]>([])
   sessionsRef.current = sessions
+  // 目前排進分割版面的分頁（下面算出 visibleIds 後更新），審批通知用
+  const visibleIdsRef = useRef<string[]>([])
   const lastDispatch = useRef(0)
 
   /**
@@ -588,65 +583,43 @@ export default function TerminalPanel(): JSX.Element {
         key = enabledAgents[0]?.id || enabledShells[0]?.id || launchers[0]?.id || BUILTIN_SHELLS[0].id
       }
       const sessionId = crypto.randomUUID()
-      const term = new Terminal({
-        theme: termTheme,
-        minimumContrastRatio: minContrast,
-        fontFamily: "'SF Mono', 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace",
-        fontSize: 12,
-        cursorBlink: true,
-        // 跟 main 的 headless 畫面同一套 ConPTY 行為（pty.ts），尺寸變化後三方才會一致
-        windowsPty: { backend: 'conpty' }
-      })
-      const fitAddon = new FitAddon()
-      term.loadAddon(fitAddon)
-
-      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-        // false skips xterm's key processing without preventing the browser/IME.
-        if (isImeKey(term, e)) return false
-
-        // 2. Ctrl+C (Windows/Linux) 或 Cmd+C (macOS)：
-        // 若終端有選取文字，執行複製到剪貼簿並阻止發送 SIGINT (\x03) 給 pty，避免中斷終端執行
-        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC' && !e.shiftKey && !e.altKey) {
-          if (term.hasSelection()) {
-            // 同上：不 preventDefault 的話瀏覽器還會再複製一次（內容一樣，但沒必要）
-            e.preventDefault()
-            if (e.type === 'keydown') {
-              const sel = term.getSelection()
-              if (sel) {
-                navigator.clipboard.writeText(sel).catch(() => {})
-              }
-            }
-            return false
-          }
-          return true
-        }
-
-        // 3. Ctrl+V (Windows/Linux) 或 Cmd+V (macOS)：自己讀剪貼簿送出。
-        // 一定要 preventDefault：只回傳 false 只是叫 xterm 不要把這個鍵當成 \x16，
-        // 瀏覽器的預設貼上動作還是會發生，xterm 也監聽 textarea 的 paste 事件，
-        // 於是同一次 Ctrl+V 會被插入兩次。preventDefault 之後只剩下面這一條路。
-        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV' && !e.shiftKey && !e.altKey) {
-          e.preventDefault()
-          if (e.type === 'keydown') {
-            navigator.clipboard
-              .readText()
-              .then((text) => {
-                if (text) term.paste(text)
-              })
-              .catch(() => {})
-          }
-          return false
-        }
-
-        return true
-      })
-
       const agentDef = enabledAgents.find((a) => a.id === key)
       const shellDef = BUILTIN_SHELLS.find((s) => s.id === key)
       const title =
         titleOverride ||
         launchers.find((l) => l.id === key)?.name ||
         (agentDef ? agentDef.at : shellDef ? shellDef.label : key)
+
+      const isAgent = AGENT_IDS.includes(key)
+      // 保留上一段尾巴，避免網址剛好被切在兩個 chunk 之間
+      let urlTail = ''
+      const patch = (change: (s: TerminalSession) => Partial<TerminalSession>): void =>
+        setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, ...change(s) } : s)))
+      const ts = createTerminalSession({
+        theme: termTheme,
+        minimumContrastRatio: minContrast,
+        onPtyId: (ptyId) => patch(() => ({ ptyId })),
+        onOutput: (data) => {
+          if (isAgent) pulseAgentActivity()
+          const scan = urlTail + data
+          urlTail = scan.slice(-200)
+          if (scan.includes('http://')) {
+            const devUrl = detectDevUrl(scan)
+            if (devUrl) reportDevUrl(devUrl)
+          }
+        },
+        onApproval: (waiting) => {
+          patch(() => ({ needsApproval: waiting }))
+          // 看得到就不必再用系統通知打擾
+          if (waiting && !visibleIdsRef.current.includes(sessionId)) {
+            window.api.notify.show('Approval needed', `${title} is waiting for a response`)
+          }
+        },
+        onExit: (code) => {
+          patch((s) => ({ isExited: true, needsApproval: false, title: `${s.title} (exited ${code})` }))
+          window.api.notify.show('Task finished', `${title} exited with code ${code}`)
+        }
+      })
 
       setSessions((prev) => [
         ...prev,
@@ -655,9 +628,8 @@ export default function TerminalPanel(): JSX.Element {
           title,
           launcherKey: key,
           args,
-          term,
-          fitAddon,
-          disposables: [],
+          term: ts.term,
+          ts,
           isExited: false,
           needsApproval: false,
           associatedSessionId,
@@ -976,8 +948,7 @@ export default function TerminalPanel(): JSX.Element {
       const session = prev[idx]
 
       if (session.ptyId) window.api.pty.kill(session.ptyId)
-      session.disposables.forEach((d) => d())
-      session.term.dispose()
+      session.ts.dispose()
 
       const next = [...prev]
       next.splice(idx, 1)
@@ -1053,6 +1024,7 @@ export default function TerminalPanel(): JSX.Element {
     ...sessions.filter((s) => !mru.includes(s.id)).map((s) => s.id)
   ]
   const visibleIds = order.slice(0, paneCount)
+  visibleIdsRef.current = visibleIds
 
   // 渲染極簡 Apple 風格啟動下拉選單（透過 createPortal 浮動於頂層，不被 overflow-x 捲動容器干擾）
   const activeSession = sessions.find((s) => s.id === activeSessionId)
@@ -2016,7 +1988,6 @@ export default function TerminalPanel(): JSX.Element {
             onFocusPane={() => selectSession(s.id)}
             onContextMenu={(x, y) => setTermContextMenu({ x, y, sessionId: s.id })}
             launcherKey={s.launcherKey}
-            setSessions={setSessions}
           />
         ))}
       </div>
@@ -2115,22 +2086,6 @@ export default function TerminalPanel(): JSX.Element {
   )
 }
 
-// 比這還窄／矮就當作窗格正在收合或動畫中，不跟著縮：PTY 一縮，CLI 就照那個寬度重畫，捲動歷史留下窄版殘片
-const MIN_COLS = 20
-const MIN_ROWS = 5
-
-/**
- * 依窗格大小調整終端。接著 pty 時不直接改 xterm：送給 main，main 依輸出順序套用後回 pty:resized 才改，
- * 桌面、main 的畫面與手機三方才會一致（見 pty.ts resizePty）。
- */
-function fitToPane(session: TerminalSession, ptyId: string | null): void {
-  const dims = session.fitAddon.proposeDimensions()
-  if (!dims || dims.cols < MIN_COLS || dims.rows < MIN_ROWS) return
-  if (dims.cols === session.term.cols && dims.rows === session.term.rows) return
-  if (ptyId) window.api.pty.resize(ptyId, dims.cols, dims.rows)
-  else session.term.resize(dims.cols, dims.rows)
-}
-
 function TerminalInstance({
   session,
   isVisible,
@@ -2138,8 +2093,7 @@ function TerminalInstance({
   multi,
   onFocusPane,
   onContextMenu,
-  launcherKey,
-  setSessions
+  launcherKey
 }: {
   session: TerminalSession
   /** 是否被排進目前的分割版面 */
@@ -2150,178 +2104,42 @@ function TerminalInstance({
   onFocusPane: () => void
   onContextMenu: (x: number, y: number) => void
   launcherKey: string
-  setSessions: React.Dispatch<React.SetStateAction<TerminalSession[]>>
 }): JSX.Element {
   const elRef = useRef<HTMLDivElement>(null)
   const mounted = useRef(false)
-  // ptyId 存 ref：setSessions 會產生新物件，閉包裡的 session 永遠拿不到 ptyId，
-  // 之前 resize 因此從未真正送出。
-  const ptyIdRef = useRef<string | null>(null)
-  const approvalRef = useRef(false)
-  // 看得到就不必再用系統通知打擾
-  const isVisibleRef = useRef(isVisible)
-  isVisibleRef.current = isVisible
 
   useEffect(() => {
     if (!elRef.current) return
     mounted.current = true
+    const ts = session.ts
 
-    // remount 時 term 要重新掛進新的 DOM 節點，但底下的 spawn 只能做一次。
-    session.term.open(elRef.current)
-    if (session.bootstrapped) {
-      ptyIdRef.current = session.isExited ? null : session.ptyId || null
-      fitToPane(session, ptyIdRef.current)
-    } else {
-      // 還沒 spawn：直接量，spawn 用這個尺寸
-      session.fitAddon.fit()
-    }
-    const untrackIme = trackComposition(session.term)
-
-    // 杜絕手掌誤觸觸控板產生的中鍵（Button 1）貼上：以 capture 階段攔截，防止 xterm 接收 auxclick
-    const targetEl = elRef.current
-    const handleAuxClick = (e: MouseEvent): void => {
-      if (e.button === 1) {
-        e.preventDefault()
-        e.stopPropagation()
+    // remount 時 term 要重新掛進新的 DOM 節點，但底下的 spawn 只能做一次（ts.started 記在 session 上）。
+    ts.attach(elRef.current)
+    if (!ts.started) {
+      // Antigravity CLI 沒有自己的「Resuming...」提示，resume 後畫面長得跟全新 session
+      // 幾乎一樣（只差在最後停在舊對話的最後一句話），使用者很容易誤以為沒接上舊紀錄。
+      // 這裡純粹在本地終端畫面插入一行提示，不會送進 pty，不影響 CLI 本身的輸入輸出。
+      if (session.launcherKey === 'antigravity' && session.args?.[0] === '--conversation') {
+        session.term.writeln('\x1b[2m▸ Resuming Antigravity session...\x1b[0m')
+        session.term.writeln('')
       }
-    }
-    targetEl.addEventListener('auxclick', handleAuxClick, true)
 
-    // 拖分隔線、展開收合會連續觸發：停下來才調整一次，CLI 只重畫一次
-    let fitTimer: ReturnType<typeof setTimeout> | undefined
-    const ro = new ResizeObserver(() => {
-      clearTimeout(fitTimer)
-      fitTimer = setTimeout(() => {
-        // 組字中改尺寸會讓 xterm 重繪並中止組字（見 imeGuard）
-        if (!isComposing(session.term)) fitToPane(session, ptyIdRef.current)
-      }, 100)
-    })
-    ro.observe(elRef.current)
-
-    if (session.bootstrapped) {
-      return () => {
-        clearTimeout(fitTimer)
-        ro.disconnect()
-        untrackIme()
-        targetEl.removeEventListener('auxclick', handleAuxClick, true)
-      }
-    }
-    session.bootstrapped = true
-
-    // Antigravity CLI 沒有自己的「Resuming...」提示，resume 後畫面長得跟全新 session
-    // 幾乎一樣（只差在最後停在舊對話的最後一句話），使用者很容易誤以為沒接上舊紀錄。
-    // 這裡純粹在本地終端畫面插入一行提示，不會送進 pty，不影響 CLI 本身的輸入輸出。
-    if (session.launcherKey === 'antigravity' && session.args?.[0] === '--conversation') {
-      session.term.writeln('\x1b[2m▸ Resuming Antigravity session...\x1b[0m')
-      session.term.writeln('')
-    }
-
-    const opts: Parameters<typeof window.api.pty.spawn>[0] = {
-      cols: session.term.cols,
-      rows: session.term.rows,
-      args: session.args,
-      cwd: session.cwd,
-      sessionId: session.associatedSessionId,
-      title: session.title
-    }
-    if (DIRECT_IDS.includes(launcherKey)) {
-      opts.command = launcherKey
-    } else {
-      opts.launcherId = launcherKey
-    }
-
-    // 手機遠端開的終端已經在跑：接上去、先補目前畫面，再照一般流程掛 handler
-    const attachId = session.attachPtyId
-    const ready: Promise<string> = attachId
-      ? window.api.pty.attach(attachId).then((res) => {
-          if (!res) throw new Error('remote terminal is no longer running')
-          // 先用 pty 現在的尺寸還原畫面，下面掛好 handler 後再調成窗格大小
-          session.term.resize(res.cols, res.rows)
-          session.term.write(res.snapshot)
-          return attachId
-        })
-      : window.api.pty.spawn(opts)
-
-    ready
-      .then((ptyId) => {
-        ptyIdRef.current = ptyId
-        setSessions((prev) => prev.map((s) => (s.id === session.id ? { ...s, ptyId } : s)))
-
-        const isAgent = AGENT_IDS.includes(session.launcherKey)
-        // 保留上一段尾巴，避免網址剛好被切在兩個 chunk 之間
-        let urlTail = ''
-        let approvalTimer: ReturnType<typeof setTimeout> | undefined
-        const checkApproval = (): void => {
-          if (approvalTimer || !ptyIdRef.current) return
-          approvalTimer = setTimeout(() => {
-            approvalTimer = undefined
-            const waiting = looksLikeApprovalPrompt(readApprovalScreen(session.term))
-            if (waiting === approvalRef.current) return
-            approvalRef.current = waiting
-            setSessions((prev) =>
-              prev.map((s) => (s.id === session.id ? { ...s, needsApproval: waiting } : s))
-            )
-            if (waiting && !isVisibleRef.current) {
-              window.api.notify.show('Approval needed', `${session.title} is waiting for a response`)
+      // 手機遠端開的終端已經在跑：接上去；其餘照窗格量到的尺寸 spawn
+      ts.start(
+        session.attachPtyId
+          ? { ptyId: session.attachPtyId }
+          : {
+              spawn: {
+                args: session.args,
+                cwd: session.cwd,
+                sessionId: session.associatedSessionId,
+                title: session.title,
+                ...(DIRECT_IDS.includes(launcherKey) ? { command: launcherKey } : { launcherId: launcherKey })
+              }
             }
-          }, 120)
-        }
-        const unsubData = window.api.pty.onData(ptyId, (data) => {
-          session.term.write(data, checkApproval)
-
-          if (isAgent) pulseAgentActivity()
-          const scan = urlTail + data
-          urlTail = scan.slice(-200)
-          if (scan.includes('http://')) {
-            const devUrl = detectDevUrl(scan)
-            if (devUrl) reportDevUrl(devUrl)
-          }
-        })
-
-        // 排在已收到的輸出後面才改尺寸，跟 main 套用的順序一樣
-        const unsubResized = window.api.pty.onResized(ptyId, (cols, rows) => {
-          session.term.write('', () => { session.term.resize(cols, rows); checkApproval() })
-        })
-
-        const unsubExit = window.api.pty.onExit(ptyId, (code) => {
-          clearTimeout(approvalTimer)
-          // 結束後 main 不再處理 resize，改回直接調整 xterm
-          ptyIdRef.current = null
-          approvalRef.current = false
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === session.id
-                ? { ...s, isExited: true, needsApproval: false, title: `${s.title} (exited ${code})` }
-                : s
-            )
-          )
-          window.api.notify.show('Task finished', `${session.title} exited with code ${code}`)
-        })
-
-        const termDataDisp = session.term.onData((data) => {
-          window.api.pty.write(ptyId, data)
-        })
-
-        session.disposables.push(unsubData, unsubResized, unsubExit, () => termDataDisp.dispose(), () => clearTimeout(approvalTimer))
-        session.term.write('', checkApproval)
-        // spawn 期間窗格變過的話 xterm 已直接改了尺寸，pty 還是 spawn 時的大小
-        if (!attachId && (session.term.cols !== opts.cols || session.term.rows !== opts.rows)) {
-          window.api.pty.resize(ptyId, session.term.cols, session.term.rows)
-        }
-        // attach 的 pty 是手機開的尺寸，調成窗格大小
-        fitToPane(session, ptyId)
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        session.term.write(`\r\n\x1b[31mFailed to start: ${msg}\x1b[0m\r\n`)
-      })
-
-    return () => {
-      clearTimeout(fitTimer)
-      ro.disconnect()
-      untrackIme()
-      targetEl.removeEventListener('auxclick', handleAuxClick, true)
+      )
     }
+    return () => ts.detach()
   }, [])
 
   // 從隱藏變回顯示時（display:none 期間尺寸為 0），重新 fit 一次
@@ -2330,7 +2148,7 @@ function TerminalInstance({
     const timer = setTimeout(() => {
       if (isComposing(session.term)) return
       try {
-        fitToPane(session, ptyIdRef.current)
+        session.ts.fit()
         if (isActive) focusTerm(session.term)
       } catch {
         /* 尺寸尚未穩定時忽略 */
