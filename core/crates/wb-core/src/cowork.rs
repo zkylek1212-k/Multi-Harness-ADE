@@ -5,20 +5,20 @@
 // never held across a process or a slow git call. A generation counter lets a call that comes back late see it no longer owns the run.
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use wb_proc::runner::{run_process_with, OutputSink};
 use wb_proc::{CancelToken, RunSpec};
 
 use crate::cowork_exec as exec;
 use crate::cowork_shared as sh;
 use crate::util::{js_len, js_prefix, sv};
+pub use crate::util::{prev_path, read_json_with_fallback, repo_id_of, write_json_atomic};
+pub use crate::worktree::{exclude_cowork_dir, remove_snapshot, scope_escapes};
 
 pub type Run = Arc<Mutex<Value>>;
 
@@ -143,78 +143,8 @@ pub fn run_proc(spec: &RunSpec, cancel: &CancelToken, hooks: ProcHooks, on_pid: 
     }
 }
 
-/// Atomic manifest write: temp file, fsync, keep the previous copy, rename. Windows antivirus can hold a file briefly, so retry.
-pub fn write_json_atomic(file: &Path, data: &Value) -> Result<(), String> {
-    let dir = file.parent().ok_or("no parent")?;
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.{}.{}.tmp", std::process::id(), crate::util::now_ms() as u64));
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(serde_json::to_string_pretty(data).unwrap().as_bytes()).map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())?;
-    }
-    let retry = |op: &dyn Fn() -> std::io::Result<()>| -> std::io::Result<()> {
-        let mut last = Ok(());
-        for i in 0..6u64 {
-            last = op();
-            match &last {
-                Ok(()) => return Ok(()),
-                Err(e) if matches!(e.raw_os_error(), Some(5) | Some(32)) || e.kind() == std::io::ErrorKind::PermissionDenied => std::thread::sleep(Duration::from_millis(25 * (i + 1))),
-                Err(_) => return last,
-            }
-        }
-        last
-    };
-    let result = (|| -> std::io::Result<()> {
-        if file.exists() {
-            retry(&|| fs::copy(file, prev_path(file)).map(|_| ()))?;
-        }
-        retry(&|| fs::rename(&tmp, file))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result.map_err(|e| e.to_string())
-}
-
-pub fn prev_path(file: &Path) -> PathBuf {
-    let s = file.to_string_lossy();
-    PathBuf::from(format!("{}.prev.json", s.strip_suffix(".json").unwrap_or(&s)))
-}
-
-/// The main file, or the previous copy if it is damaged or the wrong shape
-pub fn read_json_with_fallback(file: &Path, valid: &dyn Fn(&Value) -> bool) -> Option<(Value, bool)> {
-    for (f, backup) in [(file.to_path_buf(), false), (prev_path(file), true)] {
-        if let Some(v) = crate::util::read_text(&f).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
-            if valid(&v) {
-                return Some((v, backup));
-            }
-        }
-    }
-    None
-}
-
 fn is_run(v: &Value) -> bool {
     v["schemaVersion"] == json!(1) && v["id"].is_string() && v["log"].is_array() && v["calls"].is_array() && v["boards"].is_array()
-}
-
-fn real_path(p: &str) -> String {
-    let abs = crate::util::resolve(p);
-    let c = fs::canonicalize(&abs).map(|c| crate::util::p(&c)).unwrap_or(abs);
-    match c.strip_prefix(r"\\?\UNC\") {
-        Some(rest) => format!(r"\\{rest}"),
-        None => c.strip_prefix(r"\\?\").unwrap_or(&c).to_string(),
-    }
-}
-
-/// A repo's identity: the normalized git common dir, case-insensitive on Windows
-pub fn repo_id_of(common_dir: &str) -> String {
-    let mut p = real_path(common_dir);
-    if cfg!(windows) {
-        p = p.to_lowercase();
-    }
-    Sha256::digest(p.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 fn to_base36(mut n: u64) -> String {
@@ -235,85 +165,6 @@ fn new_run_id() -> String {
 
 pub fn snapshot_dir_for(common_dir: &str, id: &str) -> String {
     crate::util::p(&Path::new(common_dir).join("cowork").join(id).join("snapshot"))
-}
-
-/// Git marks some files read-only on Windows, and a plain delete then fails
-fn remove_tree(dir: &Path) -> std::io::Result<()> {
-    if fs::remove_dir_all(dir).is_ok() || !dir.exists() {
-        return Ok(());
-    }
-    fn walk(p: &Path) {
-        for e in fs::read_dir(p).into_iter().flatten().flatten() {
-            let t = e.file_type();
-            if t.as_ref().map(|t| t.is_dir() && !t.is_symlink()).unwrap_or(false) {
-                walk(&e.path());
-            } else if let Ok(m) = e.metadata() {
-                let mut perm = m.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perm.set_readonly(false);
-                let _ = fs::set_permissions(e.path(), perm);
-            }
-        }
-    }
-    walk(dir);
-    fs::remove_dir_all(dir)
-}
-
-/// Only deletes under must_be_under, never the repo or where an outside link points
-pub fn remove_snapshot(dir: &str, must_be_under: &str) -> Result<(), String> {
-    if !Path::new(dir).exists() {
-        return Ok(());
-    }
-    let (real, base) = (real_path(dir), real_path(must_be_under));
-    let (r, b) = (real.to_lowercase(), base.to_lowercase());
-    if r == b || !r.starts_with(&format!("{b}{}", std::path::MAIN_SEPARATOR)) {
-        return Err(format!("refusing to delete {real}: not under {base}"));
-    }
-    remove_tree(Path::new(&real)).map_err(|e| e.to_string())?;
-    // Empty run and cowork folders go too
-    let mut p = crate::util::dirname(&real);
-    while p.to_lowercase() != b && p.to_lowercase().starts_with(&b) {
-        if fs::remove_dir(&p).is_err() {
-            break;
-        }
-        p = crate::util::dirname(&p);
-    }
-    let _ = fs::remove_dir(&base);
-    Ok(())
-}
-
-/// A scope path that leaves the tree through a symlink or junction. For a file not yet created, the longest existing prefix counts.
-pub fn scope_escapes(tree_root: &str, rel: &str) -> Option<String> {
-    let base = real_path(tree_root);
-    let mut probe = PathBuf::from(tree_root).join(rel);
-    while !probe.exists() {
-        match probe.parent() {
-            Some(x) if x != probe => probe = x.to_path_buf(),
-            _ => return None,
-        }
-    }
-    let real = real_path(&crate::util::p(&probe));
-    let (r, b) = (real.to_lowercase(), base.to_lowercase());
-    if r != b && !r.starts_with(&format!("{b}{}", std::path::MAIN_SEPARATOR)) {
-        return Some(format!("{rel} resolves outside the repository ({real})"));
-    }
-    None
-}
-
-/// `.cowork/` in the local exclude file: git status stays clean and the tracked .gitignore is left alone
-pub fn exclude_cowork_dir(common_dir: &str) {
-    let file = Path::new(common_dir).join("info").join("exclude");
-    let text = crate::util::read_text(&file).unwrap_or_default();
-    if text.lines().any(|l| l.trim() == ".cowork/") {
-        return;
-    }
-    if let Some(d) = file.parent() {
-        let _ = fs::create_dir_all(d);
-    }
-    let sep = if !text.is_empty() && !text.ends_with('\n') { "\n" } else { "" };
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&file) {
-        let _ = write!(f, "{sep}# Agent Workbench Cowork worktrees\n.cowork/\n");
-    }
 }
 
 /// Added or changed since the baseline; removal counts too
@@ -2005,35 +1856,6 @@ impl Service {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn manifest_keeps_the_previous_copy_and_falls_back() {
-        let dir = std::env::temp_dir().join(format!("wb-store-{}", uuid::Uuid::new_v4()));
-        let file = dir.join("run.json");
-        let valid = |v: &Value| v["v"].is_number();
-        write_json_atomic(&file, &json!({ "v": 1 })).unwrap();
-        write_json_atomic(&file, &json!({ "v": 2 })).unwrap();
-        assert_eq!(read_json_with_fallback(&file, &valid).unwrap(), (json!({ "v": 2 }), false));
-        fs::write(&file, "{ torn").unwrap();
-        assert_eq!(read_json_with_fallback(&file, &valid).unwrap(), (json!({ "v": 1 }), true));
-        fs::write(&file, "{\"other\":1}").unwrap();
-        assert_eq!(read_json_with_fallback(&file, &valid).unwrap().1, true, "wrong shape counts as damaged");
-        fs::remove_file(prev_path(&file)).unwrap();
-        assert!(read_json_with_fallback(&file, &valid).is_none());
-        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
-        assert!(leftovers.is_empty(), "no temp files stay behind");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn repo_id_matches_what_is_on_disk() {
-        // Sixteen hex characters of a sha-256, so existing runs stay under the folders they were saved in
-        assert_eq!(repo_id_of("C:\\no\\such\\path").len(), 16);
-    }
-}
 
 fn next_step(run: &Value) -> Option<&'static str> {
     if sv(run, "mode") == "discussion" {

@@ -23,6 +23,7 @@ pub mod settings;
 pub mod updater;
 pub mod usage;
 pub mod util;
+pub mod worktree;
 
 use std::sync::Arc;
 
