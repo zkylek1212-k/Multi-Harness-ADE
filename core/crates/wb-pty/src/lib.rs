@@ -239,7 +239,16 @@ mod tests {
             }
             got
         };
-        let first = drain(1500);
+        // Node can take seconds to start on a CI runner, so wait for the limit itself, then give the reader time to stall.
+        let mut first = 0;
+        let end = Instant::now() + Duration::from_secs(30);
+        while first < 4096 {
+            match rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+                Ok(n) => first += n,
+                Err(_) => break,
+            }
+        }
+        first += drain(500);
         assert!(first >= 4096, "should reach the credit limit, got {first}");
         assert!(first <= 4096 + 64 * 1024, "reader kept going past its credit: {first}");
         assert!(session.stalls() >= 1, "reader should have stopped");

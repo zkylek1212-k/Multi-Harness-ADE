@@ -32,8 +32,10 @@ jobs:
       - run: npm run build:ui
       - name: Rust tests and programs
         working-directory: core
+        # bash stops at the first failing line; under the default pwsh only the last command's exit code counted.
+        shell: bash
         run: |
-          cargo test -p wb-proc -p wb-git -p wb-secrets -p wb-pty -p wb-core -p wb-hook
+          cargo test --no-fail-fast -p wb-proc -p wb-git -p wb-secrets -p wb-pty -p wb-core -p wb-hook
           cargo build -p wb-ipc -p agent-workbench -p wb-hook
           cargo build -p wb-pty --example mirror_text
       - name: Check scripts
