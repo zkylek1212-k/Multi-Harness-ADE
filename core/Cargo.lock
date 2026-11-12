@@ -5600,6 +5600,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wb-hook"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "wb-ipc"
 version = "0.0.0"
 dependencies = [

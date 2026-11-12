@@ -1,0 +1,12 @@
+[package]
+name = "wb-hook"
+description = "The permission hook all three CLIs run: hands the request to the app over a named pipe and prints the answer in that CLI's format. Std only, so it starts fast."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
