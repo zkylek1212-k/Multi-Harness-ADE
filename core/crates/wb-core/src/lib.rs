@@ -1,12 +1,9 @@
 //! The whole backend behind one call, independent of any UI framework.
+pub mod approval_hook;
 pub mod bgtasks;
+pub mod canvas;
 pub mod conn;
 pub mod core;
-pub mod cowork;
-pub mod cowork_exec;
-pub mod cowork_ipc;
-pub mod cowork_test;
-pub mod cowork_shared;
 pub mod custom_agent;
 pub mod dashboard;
 pub mod ext;
@@ -35,13 +32,13 @@ pub use crate::core::{AppInfo, Core, Host};
 pub struct Features {
     pub memsync: memsync::MemSync,
     pub updater: updater::Updater,
-    pub cowork: cowork_ipc::CoworkApp,
     pub remote: remote::RemoteApp,
+    pub canvas: canvas::CanvasApp,
 }
 
 pub fn start_features(core: &Arc<Core>) {
-    let _ = core.features.set(Features { memsync: memsync::MemSync::default(), updater: updater::Updater::new(&core.info.version, core.info.is_packaged), cowork: cowork_ipc::CoworkApp::default(), remote: remote::start(core) });
-    cowork_ipc::start_service(core);
+    let _ = core.features.set(Features { memsync: memsync::MemSync::default(), updater: updater::Updater::new(&core.info.version, core.info.is_packaged), remote: remote::start(core), canvas: canvas::CanvasApp::default() });
+    canvas::start(core);
     memsync::start_background_sync(core);
     updater::start_startup_check(core);
     remote::start_background(core);
@@ -64,8 +61,12 @@ pub fn test_call(name: &str, a: &[Value]) -> Result<Value, String> {
         }
         "dayKey" => Ok(Value::String(usage::day_key(a.first().unwrap_or(&Value::Null)))),
         "looksLikeApprovalPrompt" => Ok(Value::Bool(wb_pty::approval::looks_like_approval_prompt(text(0)))),
-        "phoneCoworkOps" => Ok(serde_json::json!(remote::server::PHONE_COWORK_OPS)),
+        "phoneCanvasOps" => Ok(serde_json::json!(remote::server::PHONE_CANVAS_OPS)),
         "phoneAuditedOps" => Ok(serde_json::json!(remote::server::PHONE_AUDITED_OPS)),
+        "parseApprovalPrompt" => Ok(match wb_pty::approval::parse_approval_prompt(text(0)) {
+            Some(p) => serde_json::json!({ "title": p.title, "options": p.options, "selected": p.selected, "canApprove": p.can_approve, "canReject": p.can_reject }),
+            None => Value::Null,
+        }),
         _ => remote::test_call(name, a),
     }
 }
@@ -74,8 +75,8 @@ pub fn features_call(core: &Arc<Core>, window: u32, channel: &str, args: &[Value
     match channel.split(':').next().unwrap_or("") {
         "memsync" => memsync::call(core, window, channel, args),
         "updater" => updater::call(core, channel, args),
-        "cowork" => cowork_ipc::call(core, window, channel, args),
         "remote" => remote::call(core, window, channel, args),
+        "canvas" => canvas::call(core, window, channel, args),
         _ => Err(format!("No handler registered for '{channel}'")),
     }
 }

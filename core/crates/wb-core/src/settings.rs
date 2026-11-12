@@ -223,8 +223,12 @@ impl Core {
         }
         out.insert("autoCheckUpdates".into(), parsed.get("autoCheckUpdates").filter(|v| !v.is_null()).cloned().unwrap_or(json!(true)));
         out.insert("autoDownloadUpdates".into(), parsed.get("autoDownloadUpdates").filter(|v| !v.is_null()).cloned().unwrap_or(json!(false)));
-        // Budget limits only come from the user's file: a repo cannot relax them
-        out.insert("cowork".into(), crate::cowork_shared::sanitize_cowork_settings(global.get("cowork")));
+        // Where node worktrees go comes only from the user's file: a repo cannot point it elsewhere.
+        // Cowork 2.0 keeps only this key; the old planning settings are dropped (the legacy inventory reads the raw file).
+        let root = global.pointer("/cowork/worktreeRoot").and_then(Value::as_str).map(|s| crate::util::js_prefix(s.trim(), 500)).unwrap_or_default();
+        // Structured approval per CLI (§3.4): Claude is session-only so on by default, the other two change the CLI's user setup
+        let hook = |agent: &str| global.pointer(&format!("/cowork/structuredApproval/{agent}")).and_then(Value::as_bool).unwrap_or(agent == "claude");
+        out.insert("cowork".into(), json!({ "worktreeRoot": root, "structuredApproval": { "claude": hook("claude"), "codex": hook("codex"), "antigravity": hook("antigravity") } }));
         Value::Object(out)
     }
 
@@ -387,6 +391,10 @@ impl Core {
             updated[key] = merge(current.get(key), patch.get(key));
         }
         self.save_settings(&updated)?;
+        // agy's hook lives in its user-level hooks.json: add or remove only our entry, right when the switch changes
+        if patch.get("cowork").is_some() || patch.get("cliBypassPermissions").is_some() {
+            let _ = crate::approval_hook::sync_agy(self);
+        }
         if patch.get("customAgent").is_some() || patch.get("proxy").is_some() {
             self.host.send_all("settings:changed", json!([]));
             crate::remote::on_settings_changed(self);

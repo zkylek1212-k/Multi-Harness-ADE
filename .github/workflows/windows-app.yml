@@ -33,8 +33,8 @@ jobs:
       - name: Rust tests and programs
         working-directory: core
         run: |
-          cargo test -p wb-proc -p wb-git -p wb-secrets -p wb-pty -p wb-core
-          cargo build -p wb-ipc -p agent-workbench
+          cargo test -p wb-proc -p wb-git -p wb-secrets -p wb-pty -p wb-core -p wb-hook
+          cargo build -p wb-ipc -p agent-workbench -p wb-hook
           cargo build -p wb-pty --example mirror_text
       - name: Check scripts
         shell: bash

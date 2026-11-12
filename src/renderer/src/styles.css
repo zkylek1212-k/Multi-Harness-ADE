@@ -26,6 +26,10 @@
   --morandi-purple: #af52de;
   --morandi-red: #ff3b30;
   --morandi-cyan: #0071e3;
+  /* Cowork 畫布：引用各主題已有的 token，四套主題自動各有一份 */
+  --node-active: var(--accent);
+  --node-approval: var(--orange);
+  --canvas-dot: var(--border-strong);
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.06);
   --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.16), 0 4px 16px rgba(0, 0, 0, 0.06);
   --radius: 8px;

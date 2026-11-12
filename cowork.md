@@ -1,5 +1,7 @@
 # Cowork.md — 多 Agent 協作模式設計計畫
 
+> **已由 Cowork 2.0 取代（2026-11-13，DEC-013）。** 本文件描述的會議／規劃／背景執行協議已移除，不再維護，只留作歷史紀錄。現行設計是畫布模式：每個 Agent 是一個互動式終端節點，各自一個 worktree，見 `src/shared/canvas.ts` 與 `core/crates/wb-core/src/canvas.rs`。
+
 - 日期：2026-10-07（Asia/Taipei）
 - 狀態：**P1 已實作**；背景執行（取代原 P2 的 PTY 派送，含同時執行）見 §12.5
 - 沿革：Claude Opus 5 原稿 → Codex 覆核修訂 → Claude Opus 5.5 合併（各版差異見附錄 B）

@@ -9,17 +9,16 @@ import {
   setLiveAgentSessionIds,
   reportDevUrl,
   pulseAgentActivity,
-  workspaceChangedByUser
+  workspaceChangedByUser,
+  setUiMode
 } from '@/store'
 import type { DraggedSessionPayload } from '@/store'
 import { useTranslation } from '@/i18n'
 import { detectDevUrl } from './portDetect'
 import { focusTerm, isComposing } from './imeGuard'
-import { createTerminalSession } from './terminalSession'
+import { createTerminalSession, xtermTheme } from './terminalSession'
 import type { TerminalSession as TermSession } from './terminalSession'
 import AgentMark from '@/components/AgentMark'
-import CoworkPanel from '@panels/cowork/CoworkPanel'
-import type { CoworkAgent, CoworkPhase } from '../../../../shared/cowork'
 import { CUSTOM_AGENT_ID } from '../../../../shared/customAgent'
 import {
   IconPlus,
@@ -232,10 +231,6 @@ export default function TerminalPanel(): JSX.Element {
   const [sessions, setSessions] = useState<TerminalSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [splitMode, setSplitMode] = useState<SplitMode>('single')
-  // Cowork 是終端區的一個兄弟分頁：開著時蓋在終端畫面上，終端本身保持掛載
-  const [coworkTabs, setCoworkTabs] = useState<{ id: string; number: number; prompt: string | null; phase: CoworkPhase | null }[]>([])
-  const [activeCoworkId, setActiveCoworkId] = useState<string | null>(null)
-  const coworkTabCounter = useRef(0)
   // 最近使用順序：分割時就顯示最近用過的前 N 個，不必再另外挑面板
   const [mru, setMru] = useState<string[]>([])
 
@@ -429,115 +424,7 @@ export default function TerminalPanel(): JSX.Element {
     [sendToSession]
   )
 
-  const termTheme = useMemo(() => {
-    switch (theme) {
-      case 'light-morandi':
-        return {
-          background: '#ece7df',
-          foreground: '#202427',
-          cursor: '#3e5d60',
-          cursorAccent: '#ece7df',
-          selectionBackground: 'rgba(72, 106, 109, 0.28)',
-          selectionInactiveBackground: 'rgba(72, 106, 109, 0.15)',
-          selectionForeground: '#1e2226',
-          black: '#202427',
-          red: '#94382d',
-          green: '#2b5f32',
-          yellow: '#744e12',
-          blue: '#275279',
-          magenta: '#6c3b72',
-          cyan: '#205c60',
-          white: '#353c43',
-          brightBlack: '#59626b',
-          brightRed: '#aa4236',
-          brightGreen: '#356e3d',
-          brightYellow: '#855b17',
-          brightBlue: '#30628e',
-          brightMagenta: '#7c4583',
-          brightCyan: '#266d72',
-          brightWhite: '#181b1e'
-        }
-      case 'dark-morandi':
-        return {
-          background: '#1c2023',
-          foreground: '#e2ded6',
-          cursor: '#79a3a3',
-          cursorAccent: '#1c2023',
-          selectionBackground: 'rgba(121, 163, 163, 0.35)',
-          selectionInactiveBackground: 'rgba(121, 163, 163, 0.18)',
-          selectionForeground: '#ffffff',
-          black: '#25292d',
-          red: '#d68b7e',
-          green: '#8fae92',
-          yellow: '#d4a37e',
-          blue: '#7b98b0',
-          magenta: '#a291ad',
-          cyan: '#79a3a3',
-          white: '#e2ded6',
-          brightBlack: '#626c76',
-          brightRed: '#e49d91',
-          brightGreen: '#a2c0a5',
-          brightYellow: '#e0b392',
-          brightBlue: '#8eaac0',
-          brightMagenta: '#b4a4be',
-          brightCyan: '#8fb6b6',
-          brightWhite: '#f6f4ee'
-        }
-      case 'light':
-        return {
-          background: '#ffffff',
-          foreground: '#1d1d1f',
-          cursor: '#1d1d1f',
-          cursorAccent: '#ffffff',
-          selectionBackground: '#b3d7ff',
-          selectionInactiveBackground: '#dbeafe',
-          selectionForeground: '#1d1d1f',
-          black: '#1a1a1c',
-          red: '#c5221f',
-          green: '#137333',
-          yellow: '#825000',
-          blue: '#1a56db',
-          magenta: '#7b1fa2',
-          cyan: '#007281',
-          white: '#3c4043',
-          brightBlack: '#5f6368',
-          brightRed: '#d93025',
-          brightGreen: '#188038',
-          brightYellow: '#946000',
-          brightBlue: '#1b66c9',
-          brightMagenta: '#8e24aa',
-          brightCyan: '#00838f',
-          brightWhite: '#202124'
-        }
-      case 'dark':
-      default:
-        return {
-          background: '#1c1c1e',
-          foreground: '#f5f5f7',
-          cursor: '#f5f5f7',
-          cursorAccent: '#1c1c1e',
-          selectionBackground: '#264f78',
-          selectionInactiveBackground: '#1e3a5f',
-          selectionForeground: '#ffffff',
-          black: '#1c1c1e',
-          red: '#ff6961',
-          green: '#30d158',
-          yellow: '#ffd60a',
-          blue: '#409cff',
-          magenta: '#da8fff',
-          cyan: '#70d7ff',
-          white: '#f5f5f7',
-          brightBlack: '#636366',
-          brightRed: '#ff453a',
-          brightGreen: '#32d74b',
-          brightYellow: '#ffd60a',
-          brightBlue: '#0a84ff',
-          brightMagenta: '#bf5af2',
-          brightCyan: '#64d2ff',
-          brightWhite: '#ffffff'
-        }
-    }
-  }, [theme])
+  const termTheme = useMemo(() => xtermTheme(theme), [theme])
 
   const minContrast = theme === 'light' || theme === 'light-morandi' ? 4.5 : 1
 
@@ -563,7 +450,6 @@ export default function TerminalPanel(): JSX.Element {
 
   // 切到某分頁即視為使用者已看到，清掉紅點；同時把它移到 MRU 最前面
   const selectSession = useCallback((id: string): void => {
-    setActiveCoworkId(null)
     setActiveSessionId(id)
     setMru((prev) => [id, ...prev.filter((x) => x !== id)])
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, needsApproval: false } : s)))
@@ -639,7 +525,6 @@ export default function TerminalPanel(): JSX.Element {
         }
       ])
       setMru((prev) => [sessionId, ...prev])
-      setActiveCoworkId(null)
       setActiveSessionId(sessionId)
       return sessionId
     },
@@ -1175,19 +1060,10 @@ export default function TerminalPanel(): JSX.Element {
     </div>
   )
 
+  // Cowork 2.0 是獨立的畫布模式，不再是終端區的分頁；這裡只是入口
   const openCowork = (): void => {
-    const id = crypto.randomUUID()
-    const number = ++coworkTabCounter.current
-    setCoworkTabs((prev) => [...prev, { id, number, prompt: null, phase: null }])
-    setActiveCoworkId(id)
     setAddMenuOpen(false)
-  }
-
-  const closeCowork = (id: string): void => {
-    const index = coworkTabs.findIndex((tab) => tab.id === id)
-    const next = coworkTabs.filter((tab) => tab.id !== id)
-    setCoworkTabs(next)
-    setActiveCoworkId((active) => active === id ? next[Math.max(0, index - 1)]?.id || null : active)
+    setUiMode('cowork')
   }
 
   // 渲染新增終端選單（支援 PowerShell, Command Prompt 與 AI Agents）
@@ -1629,7 +1505,7 @@ export default function TerminalPanel(): JSX.Element {
       </div>
 
       {/* Row 2: Dedicated Session Tabs Bar (Displayed when one or more sessions exist) */}
-      {(sessions.length > 0 || coworkTabs.length > 0) && (
+      {sessions.length > 0 && (
         <div
           className="term-tabs-row"
           onDragOver={(e) => {
@@ -1645,28 +1521,6 @@ export default function TerminalPanel(): JSX.Element {
           }}
         >
           <div className="term-strip-tabs">
-            {coworkTabs.map((tab) => (
-              <div
-                key={tab.id}
-                className={`term-unified-tab term-cowork-tab ${activeCoworkId === tab.id ? 'active' : ''}`}
-                onClick={() => setActiveCoworkId(tab.id)}
-                title={tab.prompt || t('cowork.buttonTitle')}
-              >
-                <IconCowork size={12} />
-                <span className="term-tab-title">{tab.prompt || `${t('cowork.tab')} ${tab.number}`}</span>
-                {tab.phase && <span className={`cw-tab-dot phase-${tab.phase}`} title={t(`cowork.phase_${tab.phase}`)} />}
-                <button
-                  className="term-tab-close"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    closeCowork(tab.id)
-                  }}
-                  title={t('cowork.close')}
-                >
-                  <IconClose size={10} />
-                </button>
-              </div>
-            ))}
             {sessions.map((s) => {
               const isHovered = hoveredTabId === s.id
               const dragged = getDraggedSession()
@@ -1676,7 +1530,7 @@ export default function TerminalPanel(): JSX.Element {
               return (
                 <div
                   key={s.id}
-                  className={`term-unified-tab ${!activeCoworkId && activeSessionId === s.id ? 'active' : ''} ${
+                  className={`term-unified-tab ${activeSessionId === s.id ? 'active' : ''} ${
                     s.isExited ? 'exited' : ''
                   } ${paneCount > 1 && visibleIds.includes(s.id) ? 'shown' : ''} ${
                     isHandoffTab ? 'drag-handoff-target' : ''
@@ -1747,29 +1601,6 @@ export default function TerminalPanel(): JSX.Element {
         onDragOver={handleStageDragOver}
         onDrop={handleStageDrop}
       >
-        {coworkTabs.map((tab) => (
-          <div key={tab.id} className="cw-host" hidden={activeCoworkId !== tab.id}>
-            <CoworkPanel
-              initialRunId={null}
-              sessions={sessions.map((s) => ({
-                id: s.id,
-                title: s.title,
-                launcherKey: s.launcherKey,
-                isExited: s.isExited,
-                needsApproval: s.needsApproval
-              }))}
-              onPaste={(id, text, fresh) => {
-                // 只貼上、不送 Enter：使用者在終端裡確認內容後自己送出（cowork.md §5.1）
-                if (fresh) pasteWhenReady(id, text)
-                else sendToSession(id, text)
-                selectSession(id)
-              }}
-              onOpenAgent={(agent: CoworkAgent) => handleNewTerminal(agent)}
-              onClose={() => closeCowork(tab.id)}
-              onRunChange={(run) => setCoworkTabs((prev) => prev.map((item) => item.id === tab.id && (item.prompt !== (run?.prompt || null) || item.phase !== (run?.phase || null)) ? { ...item, prompt: run?.prompt || null, phase: run?.phase || null } : item))}
-            />
-          </div>
-        ))}
         {dragOverInfo && (
           <div className={`term-drag-overlay mode-${dragOverInfo.mode}`}>
             <div className={`term-drag-pill mode-${dragOverInfo.mode}`}>
@@ -1983,7 +1814,7 @@ export default function TerminalPanel(): JSX.Element {
             key={s.id}
             session={s}
             isVisible={visibleIds.includes(s.id)}
-            isActive={!activeCoworkId && s.id === activeSessionId}
+            isActive={s.id === activeSessionId}
             multi={paneCount > 1}
             onFocusPane={() => selectSession(s.id)}
             onContextMenu={(x, y) => setTermContextMenu({ x, y, sessionId: s.id })}

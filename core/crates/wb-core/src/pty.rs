@@ -402,6 +402,11 @@ impl Core {
 
     /// The one path to a new terminal, from a desktop window or from the phone. It closes with its owner window.
     pub fn spawn_pty(self: &Arc<Self>, opts: &Value, workspace: &str, owner: u32, subscribe_owner: bool) -> Result<String, String> {
+        self.spawn_pty_env(opts, workspace, owner, subscribe_owner, Vec::new())
+    }
+
+    /// `extra_env` is for the backend's own callers (the canvas hook pipe and token); opts from a window or phone never reach it
+    pub fn spawn_pty_env(self: &Arc<Self>, opts: &Value, workspace: &str, owner: u32, subscribe_owner: bool, extra_env: Vec<(String, String)>) -> Result<String, String> {
         let o_cmd = opts.get("command").and_then(Value::as_str).filter(|s| !s.is_empty());
         let o_launcher = opts.get("launcherId").and_then(Value::as_str).filter(|s| !s.is_empty());
         let o_title = opts.get("title").and_then(Value::as_str).filter(|s| !s.is_empty());
@@ -553,6 +558,7 @@ impl Core {
         };
         // The table lock covers spawn and insert: a process that exits at once still finds its entry
         let mut entries = self.pty.entries.lock().unwrap();
+        env.extend(extra_env);
         let session = PtySession::spawn(PtyOptions { program: command, args: args.clone(), cwd: Some(cwd.clone()), env: Some(env), cols, rows, scrollback: SCREEN_SCROLLBACK, credit: None }, on_data, on_exit)?;
         let pid = session.pid().unwrap_or(0);
         if let Some(j) = self.pty.job() {
@@ -732,6 +738,12 @@ impl Core {
         Some(session.screen_text())
     }
 
+    /// Whether the program in this terminal turned on bracketed paste; None once it is gone
+    pub fn pty_bracketed_paste(&self, id: &str) -> Option<bool> {
+        let session = self.pty.entries.lock().unwrap().get(id).map(|e| e.session.clone())?;
+        Some(session.with_mirror(|m| m.bracketed_paste()))
+    }
+
     pub fn pty_call(self: &Arc<Self>, window: u32, channel: &str, args: &[Value]) -> Result<Value, String> {
         let a0 = arg_str(args, 0);
         match channel {
@@ -743,6 +755,11 @@ impl Core {
                     Some((snapshot, cols, rows)) => json!({ "snapshot": snapshot, "cols": cols, "rows": rows }),
                     None => Value::Null,
                 })
+            }
+            // This window stops receiving the screen stream; the process and other subscribers are untouched
+            "pty:detach" => {
+                self.unsubscribe_pty(a0, &format!("wc:{window}"));
+                Ok(Value::Null)
             }
             "pty:write" => {
                 self.write_pty(a0, arg_str(args, 1));

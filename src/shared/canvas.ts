@@ -68,9 +68,9 @@ export interface ApprovalFile {
   path: string
   added: number
   removed: number
-  /** Present when the hook gave full text (Claude Write/Edit); absent for patches */
-  before?: string
-  after?: string
+  /** Present when the hook gave full text (Write/Edit); a new file has no `before` */
+  before?: string | null
+  after?: string | null
   /** Codex apply_patch text for this file */
   patch?: string
 }
@@ -87,8 +87,8 @@ export interface ApprovalRequest {
   /** Only true when the backend recognized the question and its options; otherwise the UI offers "open terminal" only */
   canApprove: boolean
   canReject: boolean
-  /** Hook layer details; raw is shown when parsing failed */
-  hook?: { tool: string; files: ApprovalFile[]; command?: string; raw: string }
+  /** Hook layer details; raw is shown when parsing failed. The phone never gets raw, command or file contents. */
+  hook?: { tool: string; files: ApprovalFile[]; command?: string | null; raw?: string } | null
 }
 
 export interface StopState {
@@ -115,15 +115,19 @@ export interface ChannelSummary {
 
 export interface ChangedFile {
   path: string
-  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked' | 'ignored'
-  binary?: boolean
+  /** git status letter: A M D R T, `?` untracked, `index-flags` hidden by assume-unchanged/skip-worktree */
+  status: string
+  /** The diff (or untracked content), secrets masked; empty when binary or truncated */
+  text: string
+  binary: boolean
   /** Content too large to show; the file is still listed */
-  truncated?: boolean
+  truncated: boolean
 }
 
 export interface ChangesSummary {
   baseCommit: string
-  commits: { sha: string; subject: string }[]
+  /** `<sha> <subject>`, newest first */
+  commits: string[]
   committed: ChangedFile[]
   staged: ChangedFile[]
   unstaged: ChangedFile[]
@@ -136,27 +140,28 @@ export interface MergePreview {
   token: string
   source: { branch: string; commit: string }
   target: { branch: string; head: string }
-  commits: { sha: string; subject: string }[]
-  files: ChangedFile[]
+  commits: string[]
+  files: { path: string; status: string }[]
 }
 
 export interface DiscardPreview {
   token: string
-  unmergedCommits: { sha: string; subject: string }[]
-  tracked: ChangedFile[]
-  untracked: ChangedFile[]
-  ignored: ChangedFile[]
+  unmergedCommits: string[]
+  changes: Omit<ChangesSummary, 'baseCommit' | 'clean'>
+  /** Ignored files with data in the worktree; they go too */
+  ignored: string[]
 }
 
 export interface LegacyWorktree {
   path: string
   branch: string
-  baseCommit?: string
+  baseCommit: string | null
   /** Only provable ones may ever be offered for cleanup */
-  appOwned: boolean
-  dirty: boolean
-  untracked: number
-  source: 'git' | 'manifest' | 'custom-root'
+  ownershipProvable: boolean
+  dirty: string[]
+  untracked: string[]
+  ignored: string[]
+  error: string | null
 }
 
 // ---------- IPC: one generic channel per op, ipcRenderer.invoke(`canvas:${op}`, req) ----------

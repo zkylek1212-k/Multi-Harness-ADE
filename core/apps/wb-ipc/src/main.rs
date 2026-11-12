@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use serde_json::{json, Value};
-use wb_core::cowork::{CoworkDeps, ResolvedCli, Service};
 use wb_core::memsync::{self, RunOpts, RunResult, Runner, Tools};
 use wb_core::{AppInfo, Core, Host};
 
@@ -127,52 +126,6 @@ impl Runner for RemoteRunner {
     }
 }
 
-/// Cowork deps answered by the test: which CLI to run comes from the scenario
-struct RemoteDeps {
-    runner: Arc<RemoteRunner>,
-    handle: u64,
-    data_dir: PathBuf,
-}
-
-impl RemoteDeps {
-    fn resolve(&self, kind: &str, agent: &str) -> Result<ResolvedCli, String> {
-        let v = self.runner.ask(json!({ "kind": kind, "agent": agent, "handle": self.handle }));
-        if let Some(e) = v.get("error").and_then(Value::as_str) {
-            return Err(e.to_string());
-        }
-        let strs = |x: &Value| -> Vec<String> { x.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() };
-        let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        let mut efforts = HashMap::new();
-        for (k, list) in v.get("modelEfforts").and_then(Value::as_object).into_iter().flatten() {
-            efforts.insert(k.clone(), strs(list));
-        }
-        Ok(ResolvedCli {
-            command: text("command"),
-            prefix_args: strs(&v["prefixArgs"]),
-            windows_sandbox: v.get("windowsSandbox").and_then(Value::as_str).map(str::to_string),
-            env: v.get("env").and_then(Value::as_object).map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_str().unwrap_or("").to_string())).collect()),
-            default_model: text("defaultModel"),
-            default_effort: text("defaultEffort"),
-            model_efforts: efforts,
-        })
-    }
-}
-
-impl CoworkDeps for RemoteDeps {
-    fn data_dir(&self) -> PathBuf {
-        self.data_dir.clone()
-    }
-    fn resolve_cli(&self, agent: &str) -> Result<ResolvedCli, String> {
-        self.resolve("resolveCli", agent)
-    }
-    fn resolve_exec_cli(&self, agent: &str) -> Result<ResolvedCli, String> {
-        self.resolve("resolveExecCli", agent)
-    }
-    fn emit(&self, run: &Value) {
-        self.runner.host.print(&json!({ "event": "cowork:emit", "handle": self.handle, "run": run }));
-    }
-}
-
 fn memsync_result(r: Result<Value, memsync::MemErr>) -> Value {
     match r {
         Ok(v) => json!({ "ok": true, "value": v }),
@@ -216,19 +169,7 @@ fn main() {
         });
         return;
     }
-    if argv.get(1).map(String::as_str) == Some("--cowork-shared") {
-        let mut input = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).expect("stdin");
-        let a: Vec<Value> = serde_json::from_str(&input).unwrap_or_default();
-        println!("{}", match wb_core::cowork_test::shared_call(&argv[2], &a) {
-            Ok(Some(v)) => json!({ "value": v }),
-            Ok(None) => json!({ "undefined": true }),
-            Err(e) => json!({ "err": e }),
-        });
-        return;
-    }
     let host = Arc::new(Stub::default());
-    let services: Arc<Mutex<HashMap<u64, Arc<Service>>>> = Arc::default();
     let pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>> = Arc::default();
     let info = AppInfo { version: std::env::var("WB_VERSION").unwrap_or_else(|_| "0.0.0".into()), is_packaged: false, exe_path: String::new(), resources: PathBuf::from(std::env::var("WB_RESOURCES").unwrap_or_default()) };
     let core = Core::new(host.clone(), PathBuf::from(std::env::var("WB_DATA_DIR").expect("WB_DATA_DIR")), info);
@@ -249,7 +190,7 @@ fn main() {
             }
             continue;
         }
-        let (core, host, pending, services) = (core.clone(), host.clone(), pending.clone(), services.clone());
+        let (core, host, pending) = (core.clone(), host.clone(), pending.clone());
         // Calls run concurrently, as they do from a real window
         std::thread::spawn(move || {
             let id = msg["id"].clone();
@@ -278,22 +219,6 @@ fn main() {
                         let tools = Tools { git: a.get("git").and_then(Value::as_str).unwrap_or("git").to_string(), gh: a.get("gh").and_then(Value::as_str).map(str::to_string), runner: runner.clone() };
                         Ok(memsync_result(memsync::test_call(name, &tools, &a)))
                     }
-                }
-                "test:coworkNew" => {
-                    let handle = args[0].as_u64().unwrap_or(0);
-                    let runner = Arc::new(RemoteRunner { host: host.clone(), pending, next: AtomicU64::new(1), call: handle + 1_000_000 });
-                    let deps = Arc::new(RemoteDeps { runner, handle, data_dir: PathBuf::from(args[1].as_str().unwrap_or("")) });
-                    services.lock().unwrap().insert(handle, Service::new(deps));
-                    Ok(Value::Null)
-                }
-                "test:coworkCall" => {
-                    let svc = services.lock().unwrap().get(&args[0].as_u64().unwrap_or(0)).cloned();
-                    let list = args[2].as_array().cloned().unwrap_or_default();
-                    Ok(match svc.map(|s| wb_core::cowork_test::service_call(&s, args[1].as_str().unwrap_or(""), &list)) {
-                        Some(Ok(v)) => json!({ "ok": true, "value": v }),
-                        Some(Err(e)) => json!({ "ok": false, "code": e.code, "message": e.message, "data": e.data }),
-                        None => json!({ "ok": false, "code": "no-service" }),
-                    })
                 }
                 "test:ptyInfo" => Ok(core.get_pty_session(args[0].as_str().unwrap_or("")).unwrap_or(Value::Null)),
                 "test:ptyScreen" => Ok(json!(core.pty_screen_text(args[0].as_str().unwrap_or("")).unwrap_or_default())),

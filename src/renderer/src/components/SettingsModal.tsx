@@ -906,7 +906,7 @@ export default function SettingsModal({
                   <span className="macos-section-header">{t('vibe.modeSection')}</span>
                   <div className="macos-inset-group" style={{ padding: '14px 16px' }}>
                     <div className="macos-lang-cards">
-                      {(['developer', 'vibe'] as const).map((m) => (
+                      {(['developer', 'vibe', 'cowork'] as const).map((m) => (
                         <button
                           key={m}
                           type="button"
@@ -917,7 +917,7 @@ export default function SettingsModal({
                             className="macos-lang-flag"
                             style={m === 'vibe' ? { background: 'var(--vibe-gradient)', color: '#fff' } : undefined}
                           >
-                            {m === 'vibe' ? '✦' : '</>'}
+                            {m === 'vibe' ? '✦' : m === 'cowork' ? '⌗' : '</>'}
                           </div>
                           <div className="macos-lang-info">
                             <span className="macos-lang-name">{t(`vibe.${m}Title`)}</span>

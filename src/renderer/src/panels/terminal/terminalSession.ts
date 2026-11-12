@@ -431,3 +431,114 @@ export function compensateZoom(term: Terminal): () => void {
   types.forEach((t) => window.addEventListener(t, remap, true))
   return () => types.forEach((t) => window.removeEventListener(t, remap, true))
 }
+
+/** xterm colors for each app theme; the terminal panel and canvas nodes share them */
+export function xtermTheme(theme: string): ITheme {
+  switch (theme) {
+    case 'light-morandi':
+      return {
+        background: '#ece7df',
+        foreground: '#202427',
+        cursor: '#3e5d60',
+        cursorAccent: '#ece7df',
+        selectionBackground: 'rgba(72, 106, 109, 0.28)',
+        selectionInactiveBackground: 'rgba(72, 106, 109, 0.15)',
+        selectionForeground: '#1e2226',
+        black: '#202427',
+        red: '#94382d',
+        green: '#2b5f32',
+        yellow: '#744e12',
+        blue: '#275279',
+        magenta: '#6c3b72',
+        cyan: '#205c60',
+        white: '#353c43',
+        brightBlack: '#59626b',
+        brightRed: '#aa4236',
+        brightGreen: '#356e3d',
+        brightYellow: '#855b17',
+        brightBlue: '#30628e',
+        brightMagenta: '#7c4583',
+        brightCyan: '#266d72',
+        brightWhite: '#181b1e'
+      }
+    case 'dark-morandi':
+      return {
+        background: '#1c2023',
+        foreground: '#e2ded6',
+        cursor: '#79a3a3',
+        cursorAccent: '#1c2023',
+        selectionBackground: 'rgba(121, 163, 163, 0.35)',
+        selectionInactiveBackground: 'rgba(121, 163, 163, 0.18)',
+        selectionForeground: '#ffffff',
+        black: '#25292d',
+        red: '#d68b7e',
+        green: '#8fae92',
+        yellow: '#d4a37e',
+        blue: '#7b98b0',
+        magenta: '#a291ad',
+        cyan: '#79a3a3',
+        white: '#e2ded6',
+        brightBlack: '#626c76',
+        brightRed: '#e49d91',
+        brightGreen: '#a2c0a5',
+        brightYellow: '#e0b392',
+        brightBlue: '#8eaac0',
+        brightMagenta: '#b4a4be',
+        brightCyan: '#8fb6b6',
+        brightWhite: '#f6f4ee'
+      }
+    case 'light':
+      return {
+        background: '#ffffff',
+        foreground: '#1d1d1f',
+        cursor: '#1d1d1f',
+        cursorAccent: '#ffffff',
+        selectionBackground: '#b3d7ff',
+        selectionInactiveBackground: '#dbeafe',
+        selectionForeground: '#1d1d1f',
+        black: '#1a1a1c',
+        red: '#c5221f',
+        green: '#137333',
+        yellow: '#825000',
+        blue: '#1a56db',
+        magenta: '#7b1fa2',
+        cyan: '#007281',
+        white: '#3c4043',
+        brightBlack: '#5f6368',
+        brightRed: '#d93025',
+        brightGreen: '#188038',
+        brightYellow: '#946000',
+        brightBlue: '#1b66c9',
+        brightMagenta: '#8e24aa',
+        brightCyan: '#00838f',
+        brightWhite: '#202124'
+      }
+    case 'dark':
+    default:
+      return {
+        background: '#1c1c1e',
+        foreground: '#f5f5f7',
+        cursor: '#f5f5f7',
+        cursorAccent: '#1c1c1e',
+        selectionBackground: '#264f78',
+        selectionInactiveBackground: '#1e3a5f',
+        selectionForeground: '#ffffff',
+        black: '#1c1c1e',
+        red: '#ff6961',
+        green: '#30d158',
+        yellow: '#ffd60a',
+        blue: '#409cff',
+        magenta: '#da8fff',
+        cyan: '#70d7ff',
+        white: '#f5f5f7',
+        brightBlack: '#636366',
+        brightRed: '#ff453a',
+        brightGreen: '#32d74b',
+        brightYellow: '#ffd60a',
+        brightBlue: '#0a84ff',
+        brightMagenta: '#bf5af2',
+        brightCyan: '#64d2ff',
+        brightWhite: '#ffffff'
+      }
+  }
+}

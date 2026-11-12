@@ -136,6 +136,16 @@ if (-not $SkipBuild) {
     Write-Host "[Step 2/4] Building the installer..." -ForegroundColor Cyan
     npm run build:ui
     if ($LASTEXITCODE -ne 0) { exit 1 }
+    # The permission hook ships as <install dir>\bin\wb-hook.exe (resources/bin in tauri.conf.json)
+    Push-Location core
+    cargo build --release -p wb-hook
+    $hookBuilt = $LASTEXITCODE
+    Pop-Location
+    if ($hookBuilt -ne 0) {
+        Write-Host "[ERROR] wb-hook build failed! Aborting release." -ForegroundColor Red
+        exit 1
+    }
+    Copy-Item (Join-Path $targetDir "release\wb-hook.exe") "core\apps\desktop\resources\bin\wb-hook.exe" -Force
     # Signing while bundling needs the public key in the config too
     $updaterConfig = Join-Path $env:TEMP "agent-workbench-updater-config.json"
     $configJson = @{
@@ -179,6 +189,8 @@ Remove-Item $portableDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
 Copy-Item (Join-Path $targetDir "release\agent-workbench.exe") $portableDir
 Copy-Item (Join-Path $targetDir "release\plugins") $portableDir -Recurse
+New-Item -ItemType Directory -Force -Path (Join-Path $portableDir "bin") | Out-Null
+Copy-Item (Join-Path $targetDir "release\wb-hook.exe") (Join-Path $portableDir "bin")
 Compress-Archive -Path "$portableDir\*" -DestinationPath $portableZip -Force
 Remove-Item $portableDir -Recurse -Force -ErrorAction SilentlyContinue
 

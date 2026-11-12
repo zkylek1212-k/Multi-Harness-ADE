@@ -359,10 +359,10 @@ pub fn commit_all(repo: &Path, node: &NodeWorktree, files: &[String], message: &
 
 #[derive(Debug)]
 pub struct MergeToken {
-    node: NodeWorktree,
-    source: String,
-    target_branch: String,
-    target_head: String,
+    pub(crate) node: NodeWorktree,
+    pub(crate) source: String,
+    pub(crate) target_branch: String,
+    pub(crate) target_head: String,
 }
 
 fn target_head(repo: &Path, branch: &str) -> Result<String> {
