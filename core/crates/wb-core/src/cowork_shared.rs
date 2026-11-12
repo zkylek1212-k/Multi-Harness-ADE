@@ -1924,28 +1924,7 @@ pub fn exec_approval_content(run: &Value, board: &Value, mode: &str, link_deps: 
     stable(&json!({ "run": run["id"], "planRevision": board["planRevision"], "baseCommit": run["repo"]["baseCommit"], "mode": mode, "linkDeps": link_deps, "bypass": bypass, "checks": board.get("checks").cloned().unwrap_or(json!([])), "tasks": tasks }))
 }
 
-fn secret_patterns() -> &'static Vec<Regex> {
-    static R: OnceLock<Vec<Regex>> = OnceLock::new();
-    R.get_or_init(|| {
-        vec![
-            Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----").unwrap(),
-            Regex::new(r"\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{16,}\b").unwrap(),
-            Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}\b").unwrap(),
-            Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
-            Regex::new(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b").unwrap(),
-            RegexBuilder::new(r#"((?:password|passwd|secret|token|api[_-]?key)["']?\s*[:=]\s*["']?)[^\s"']{6,}"#).case_insensitive(true).build().unwrap(),
-        ]
-    })
-}
-
-/// Masks common credential formats. Best effort: this cannot promise no secrets remain.
-pub fn mask_secrets(text: &str) -> String {
-    let mut out = text.to_string();
-    for re in secret_patterns() {
-        out = re.replace_all(&out, |c: &regex::Captures| format!("{}[masked]", c.get(1).map(|m| m.as_str()).unwrap_or(""))).into_owned();
-    }
-    out
-}
+pub use crate::util::mask_secrets;
 
 /// A change touching hooks gets listed as high risk
 pub fn hook_paths_in(files: &[String], hooks_path: Option<&str>) -> Vec<String> {

@@ -4,9 +4,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
-use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wb_git as g;
@@ -114,18 +113,6 @@ pub fn is_running(svc: &Service, id: &str) -> bool {
     svc.exec.active.lock().unwrap().get(id).copied().unwrap_or(0) > 0
 }
 
-fn cloud_dir() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| RegexBuilder::new("onedrive|dropbox|google ?drive|我的雲端硬碟|icloud").case_insensitive(true).build().unwrap())
-}
-
-fn worktree_base(r: &Value, custom: Option<&str>) -> String {
-    match custom.map(str::trim).filter(|c| !c.is_empty() && Path::new(c).is_absolute()) {
-        Some(c) => crate::util::resolve(c),
-        None => p(&Path::new(r["repo"]["root"].as_str().unwrap_or("")).join(".cowork")),
-    }
-}
-
 /// What the user sees before starting. The hash binds it: if any of it changes, an old approval does not apply.
 pub fn preview(_svc: &Service, r: &Value, mode: &str, link_deps: bool, bypass: bool, root: Option<&str>) -> CR<Value> {
     if sv(r, "phase") != "approved" {
@@ -152,7 +139,7 @@ pub fn preview(_svc: &Service, r: &Value, mode: &str, link_deps: bool, bypass: b
         }
         checks.push(c);
     }
-    let base = worktree_base(r, root);
+    let base = crate::worktree::worktree_base(Path::new(r["repo"]["root"].as_str().unwrap_or("")), root);
     let mut warnings = Vec::new();
     if bypass {
         warnings.push("bypass-on");
@@ -163,7 +150,7 @@ pub fn preview(_svc: &Service, r: &Value, mode: &str, link_deps: bool, bypass: b
     if !list.is_empty() {
         warnings.push("checks-run-code");
     }
-    if cloud_dir().is_match(&base) {
+    if crate::worktree::cloud_worktree(&base) {
         warnings.push("cloud-worktree");
     }
     let resolved: Vec<&Value> = checks.iter().map(|c| &c["resolved"]).collect();
