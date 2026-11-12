@@ -4,6 +4,19 @@ export type { Language }
 
 export const translations = {
   en: {
+    proxy: {
+      title: 'Proxy', mode: 'Mode', inherit: 'Inherit', custom: 'Custom proxy', direct: 'Direct',
+      scope: 'User settings for new terminals in every workspace. Restart existing sessions to apply changes.',
+      directHint: 'Direct clears proxy environment variables. CLI settings and the system network may still use a proxy.',
+      scheme: 'Protocol', host: 'Host', port: 'Port', username: 'Username (optional)', password: 'Password (write only)',
+      secretSaved: 'Password saved', secretEmpty: 'No saved password', savePassword: 'Save password', clearPassword: 'Clear password',
+      secretHint: 'Password changes are saved immediately with OS encryption, separately from Save Changes. The saved value is never returned.',
+      bypass: 'Bypass hosts (comma separated)', loopback: 'localhost, 127.0.0.1 and ::1 always bypass the custom proxy.',
+      test: 'Test TCP reachability', testHint: 'Checks only whether host:port accepts TCP connections. This does not prove that a CLI uses the proxy.',
+      reachable: 'TCP connection succeeded', unreachable: 'TCP connection failed', agents: 'Per-agent mode', global: 'Use global mode',
+      socksWarning: 'Claude Code may not support SOCKS proxies. Use an HTTP/HTTPS proxy for Claude.',
+      sessions: 'Running sessions · proxy at startup', restart: 'Restart needed', loadFailed: 'Could not load proxy status', secretFailed: 'Could not save or clear proxy password'
+    },
     customAgent: {
       title: 'Customize Agent',
       description: 'Use your own harness. Its launch and extension options appear only while enabled.',
@@ -953,6 +966,19 @@ export const translations = {
     }
   },
   'zh-TW': {
+    proxy: {
+      title: '代理伺服器', mode: '模式', inherit: '沿用系統環境', custom: '使用指定代理', direct: '強制直連',
+      scope: '使用者設定適用於所有工作區的新終端；既有 session 需重新啟動才會套用變更。',
+      directHint: '強制直連會清除代理環境變數；CLI 自身設定或系統網路仍可能使用代理。',
+      scheme: '通訊協定', host: '主機', port: '連接埠', username: '使用者名稱（選填）', password: '密碼（僅供寫入）',
+      secretSaved: '密碼已儲存', secretEmpty: '尚未儲存密碼', savePassword: '儲存密碼', clearPassword: '清除密碼',
+      secretHint: '密碼變更會立即透過作業系統加密儲存，與「儲存變更」分開處理；不會回傳已存密碼。',
+      bypass: '繞過代理的主機（以逗號分隔）', loopback: '指定代理時，localhost、127.0.0.1 與 ::1 一律繞過代理。',
+      test: '測試 TCP 可達性', testHint: '僅檢查主機與連接埠是否接受 TCP 連線，不代表 CLI 已使用此代理。',
+      reachable: 'TCP 連線成功', unreachable: 'TCP 連線失敗', agents: '各 Agent 的模式', global: '使用全域模式',
+      socksWarning: 'Claude Code 可能不支援 SOCKS 代理；請為 Claude 使用 HTTP／HTTPS 代理。',
+      sessions: '執行中的 session · 啟動時代理', restart: '需要重新啟動', loadFailed: '無法載入代理狀態', secretFailed: '無法儲存或清除代理密碼'
+    },
     customAgent: {
       title: 'Customize Agent（自訂 Agent）',
       description: '使用自己的 harness。啟用後才顯示啟動與擴充管理選項。',
