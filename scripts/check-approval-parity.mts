@@ -44,6 +44,7 @@ const screens = [
   'tab\tseparated [y/n]?',
   // 沒有編號的選單：Claude 的資料夾信任畫面，以及不該算的輸入列
   ' Quick safety check: Is this a project you trust?\n Security guide\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel ',
+  'Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n  ↑/↓ Navigate · enter Confirm\n                      Gemini 3.8 Flash · high',
   '❯ fix the tests\n  esc to interrupt',
   '> quoted reply\n  more of it',
   '```\n❯ No\n  Yes\n\n Enter to confirm',

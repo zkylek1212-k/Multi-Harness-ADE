@@ -62,7 +62,8 @@ function unnumberedMenu(lines: string[]): number {
   const m = lines.findLastIndex(line => /^\s*[❯›>▶→]\s*\S/.test(line))
   if (m === -1 || lines.slice(0, m).filter(line => fence.test(line)).length % 2 === 1) return -1
   const after = lines.slice(m + 1)
-  const ok = after.some(line => FOOTER.test(line.trim()) && /\benter\b/i.test(line)) &&
+  // 「Enter to confirm · Esc to cancel」（Claude）或「↑/↓ Navigate · enter Confirm」（agy）
+  const ok = after.some(line => /\benter\b/i.test(line) && (FOOTER.test(line.trim()) || /[·↑↓]/.test(line))) &&
     after.every(line => !line.trim() || FOOTER.test(line.trim()) || (/^\s+/.test(line) && !INPUT.test(line.trim()) && !fence.test(line)))
   return ok ? m : -1
 }

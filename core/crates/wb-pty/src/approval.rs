@@ -83,8 +83,9 @@ fn unnumbered_menu(lines: &[String]) -> Option<usize> {
         return None;
     }
     let after = &lines[m + 1..];
+    // "Enter to confirm · Esc to cancel" (Claude) or "↑/↓ Navigate · enter Confirm" (agy)
     let enter = re(&ENTER, r"(?i)\benter\b");
-    let ok = after.iter().any(|l| footer.is_match(l.trim()) && enter.is_match(l))
+    let ok = after.iter().any(|l| enter.is_match(l) && (footer.is_match(l.trim()) || l.contains(['·', '↑', '↓'])))
         && after.iter().all(|l| {
             let t = l.trim();
             t.is_empty() || footer.is_match(t) || (l.starts_with(char::is_whitespace) && !is_input_line(t) && !fence.is_match(l))
@@ -143,7 +144,9 @@ pub fn parse_approval_prompt(screen: &str) -> Option<ApprovalPrompt> {
     let menu = &rows[start..];
     let options: Vec<String> = menu.iter().map(|r| r.3.clone()).collect();
     let selected = menu.iter().position(|r| r.1);
-    let title = lines[..menu[0].0].iter().rev().map(|l| l.trim()).find(|l| !l.is_empty() && !label.is_match(l)).unwrap_or("").to_string();
+    // The question, not the last line of an explanation under it (Codex's trust screen)
+    let above = || lines[..menu[0].0].iter().rev().map(|l| l.trim()).filter(|l| !l.is_empty() && !label.is_match(l));
+    let title = above().take(8).find(|l| l.contains('?')).or_else(|| above().next()).unwrap_or("").to_string();
     let yes = |s: &str| s.to_lowercase().starts_with("yes");
     let no = |s: &str| s.to_lowercase().starts_with("no");
     let can_approve = selected.unwrap_or(0) == 0 && options.first().is_some_and(|o| yes(o));
@@ -180,6 +183,9 @@ mod tests {
         let trust = "  Trust this folder?\n\n› 1. Trust and continue\n  2. Back to Agent Command Center\n\n  enter continue · esc back";
         let p = parse_approval_prompt(trust).unwrap();
         assert!(!p.can_approve && !p.can_reject);
+        // Recorded from Codex 0.167.2 in a fresh node worktree (2026-11-13): the title is the question
+        let full = "  Folder access\n  C:\\tmp\\demo\\.cowork\\c\\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n  Folder settings can run code automatically, even without a model request. Continue only if you trust\n  these files. Your trust decision will be saved.\n› 1. Trust and continue\n  2. Back to Agent Command Center\n  enter continue · esc back";
+        assert!(parse_approval_prompt(full).unwrap().title.starts_with("Trust this folder?"));
         // Cursor moved off option 1: Enter would not approve
         let moved = "Run this command?\n  1. Yes, run command\n> 2. No, cancel\n\n  ↑/↓ Navigate · enter Confirm";
         let p = parse_approval_prompt(moved).unwrap();
@@ -196,6 +202,11 @@ mod tests {
         let p = parse_approval_prompt(trust).unwrap();
         assert!(p.title.starts_with("Quick safety check"), "{}", p.title);
         assert_eq!(p.options, ["No, exit", "Yes, I trust this folder"]);
+        assert!(!p.can_approve && !p.can_reject);
+        // Recorded from agy 1.5.6 in a fresh node worktree (2026-11-13): marked option at column 0, arrow footer
+        let agy = "Accessing workspace:\nC:\\tmp\\demo\\.cowork\\c\\n\nDo you trust the contents of this project?\nAntigravity CLI requires permission to read, edit, and execute files here.\n> Yes, I trust this folder\n  No, exit\n  ↑/↓ Navigate · enter Confirm\n                                                    Gemini 3.8 Flash · high";
+        let p = parse_approval_prompt(agy).unwrap();
+        assert_eq!(p.title, "Do you trust the contents of this project?");
         assert!(!p.can_approve && !p.can_reject);
         // An input line with a busy hint under it is not a menu
         assert!(!looks_like_approval_prompt("❯ fix the tests\n  esc to interrupt"));
