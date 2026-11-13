@@ -50,5 +50,19 @@ export function looksLikeApprovalPrompt(screen: string): boolean {
     return after.every(line => !line.trim() || FOOTER.test(line.trim()) ||
       (/^\s+/.test(line) && !INPUT.test(line.trim()) && !/^\s*(?:```|~~~)/.test(line)))
   }
-  return false
+  return unnumberedMenu(lines) !== -1
+}
+
+/**
+ * 沒有編號的選單（例如 Claude 的資料夾信任畫面）：有標記的選項，後面只有縮排行和提到 Enter 的操作提示。
+ * 要求提到 Enter，才不會把輸入列下方的「esc to interrupt」當成選單。與 wb-pty approval.rs 的 unnumbered_menu 相同。
+ */
+function unnumberedMenu(lines: string[]): number {
+  const fence = /^\s*(?:```|~~~)/
+  const m = lines.findLastIndex(line => /^\s*[❯›>▶→]\s*\S/.test(line))
+  if (m === -1 || lines.slice(0, m).filter(line => fence.test(line)).length % 2 === 1) return -1
+  const after = lines.slice(m + 1)
+  const ok = after.some(line => FOOTER.test(line.trim()) && /\benter\b/i.test(line)) &&
+    after.every(line => !line.trim() || FOOTER.test(line.trim()) || (/^\s+/.test(line) && !INPUT.test(line.trim()) && !fence.test(line)))
+  return ok ? m : -1
 }

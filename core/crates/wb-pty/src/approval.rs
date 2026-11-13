@@ -49,7 +49,7 @@ pub fn looks_like_approval_prompt(screen: &str) -> bool {
         .enumerate()
         .filter_map(|(i, l)| option.captures(l).map(|c| (i, c.get(1).is_some(), c[2].to_string())))
         .collect();
-    let Some(last) = numbered.last() else { return false };
+    let Some(last) = numbered.last() else { return unnumbered_menu(&lines).is_some() };
     let Some(start) = numbered.iter().rposition(|r| r.2 == "1") else { return false };
     let options = &numbered[start..];
     if options.len() < 2 || options.iter().enumerate().any(|(i, r)| r.2.parse::<usize>().unwrap_or(0) != i + 1) {
@@ -67,6 +67,29 @@ pub fn looks_like_approval_prompt(screen: &str) -> bool {
         let t = l.trim();
         t.is_empty() || footer.is_match(t) || (l.starts_with(char::is_whitespace) && !is_input_line(t) && !fence.is_match(l))
     })
+}
+
+/// A menu without numbers, like Claude's folder trust screen: a marked option, then only indented lines and a footer
+/// that mentions Enter. Returns the marked line. The Enter requirement keeps "esc to interrupt" under an input line out.
+/// ponytail: same restyling ceiling as above; a CLI input line followed by an "enter to send" hint would match.
+fn unnumbered_menu(lines: &[String]) -> Option<usize> {
+    static MARKED: OnceLock<Regex> = OnceLock::new();
+    static ENTER: OnceLock<Regex> = OnceLock::new();
+    let marked = re(&MARKED, r"^\s*[❯›>▶→]\s*\S");
+    let footer = re(&FOOTER, r"(?i)^(?:(?:press\s+)?(?:enter|esc(?:ape)?|tab|space)(?:\s+to\b|[/·])|use\s+(?:the\s+)?arrow\s+keys\b|[↑↓]+.*\bto\b)");
+    let fence = re(&FENCE, r"^\s*(?:```|~~~)");
+    let m = lines.iter().rposition(|l| marked.is_match(l))?;
+    if lines[..m].iter().filter(|l| fence.is_match(l)).count() % 2 == 1 {
+        return None;
+    }
+    let after = &lines[m + 1..];
+    let enter = re(&ENTER, r"(?i)\benter\b");
+    let ok = after.iter().any(|l| footer.is_match(l.trim()) && enter.is_match(l))
+        && after.iter().all(|l| {
+            let t = l.trim();
+            t.is_empty() || footer.is_match(t) || (l.starts_with(char::is_whitespace) && !is_input_line(t) && !fence.is_match(l))
+        });
+    ok.then_some(m)
 }
 
 /// Keys that answer a recognized prompt. Enter takes the highlighted option; Esc is "no / cancel" in all three CLIs (Phase 0, 2026-11-12).
@@ -102,6 +125,19 @@ pub fn parse_approval_prompt(screen: &str) -> Option<ApprovalPrompt> {
         .enumerate()
         .filter_map(|(i, l)| label.captures(l).map(|c| (i, c.get(1).is_some(), c[2].parse().unwrap_or(0), c[3].trim().to_string())))
         .collect();
+    // No numbers: shown only. These are setup questions like folder trust, answered by the user in the terminal (DEC-013).
+    if rows.is_empty() {
+        let m = unnumbered_menu(&lines)?;
+        let footer = re(&FOOTER, r"(?i)^(?:(?:press\s+)?(?:enter|esc(?:ape)?|tab|space)(?:\s+to\b|[/·])|use\s+(?:the\s+)?arrow\s+keys\b|[↑↓]+.*\bto\b)");
+        let marker = |s: &str| s.trim().trim_start_matches(['❯', '›', '>', '▶', '→']).trim().to_string();
+        let options: Vec<String> = std::iter::once(marker(&lines[m]))
+            .chain(lines[m + 1..].iter().map(|l| l.trim()).take_while(|t| !t.is_empty() && !footer.is_match(t)).map(String::from))
+            .collect();
+        let above = || lines[..m].iter().rev().map(|l| l.trim()).filter(|l| !l.is_empty());
+        let title = above().take(12).find(|l| l.contains('?')).or_else(|| above().next()).unwrap_or("").to_string();
+        let fingerprint = format!("{title}\n{}", options.join("\n"));
+        return Some(ApprovalPrompt { title, options, selected: Some(0), can_approve: false, can_reject: false, fingerprint });
+    }
     // The detector already proved the last run from 1 is consecutive
     let start = rows.iter().rposition(|r| r.2 == 1)?;
     let menu = &rows[start..];
@@ -150,6 +186,20 @@ mod tests {
         assert_eq!(p.selected, Some(1));
         assert!(!p.can_approve && p.can_reject);
         assert_eq!(parse_approval_prompt("I will approve the changes after the tests pass."), None);
+    }
+
+    #[test]
+    fn claude_folder_trust_is_shown_not_answered() {
+        // Recorded from Claude 2.1.322 starting in a fresh node worktree (2026-11-13)
+        let trust = " Accessing workspace:\n C:\\tmp\\demo\\.cowork\\c\\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a\n well-known open source project, or work from your team).\n Claude Code'll be able to read, edit, and execute files here.\n Security guide\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel ";
+        assert!(looks_like_approval_prompt(trust));
+        let p = parse_approval_prompt(trust).unwrap();
+        assert!(p.title.starts_with("Quick safety check"), "{}", p.title);
+        assert_eq!(p.options, ["No, exit", "Yes, I trust this folder"]);
+        assert!(!p.can_approve && !p.can_reject);
+        // An input line with a busy hint under it is not a menu
+        assert!(!looks_like_approval_prompt("❯ fix the tests\n  esc to interrupt"));
+        assert!(!looks_like_approval_prompt("> quoted reply\n  more of it"));
     }
 
     #[test]

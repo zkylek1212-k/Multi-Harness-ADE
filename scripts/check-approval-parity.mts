@@ -42,6 +42,12 @@ const screens = [
   '❯ 1. Yes\n  2. No\n  ❯ 3. Maybe',
   '```\ncode\n```\n❯ 1. Yes\n  2. No',
   'tab\tseparated [y/n]?',
+  // 沒有編號的選單：Claude 的資料夾信任畫面，以及不該算的輸入列
+  ' Quick safety check: Is this a project you trust?\n Security guide\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel ',
+  '❯ fix the tests\n  esc to interrupt',
+  '> quoted reply\n  more of it',
+  '```\n❯ No\n  Yes\n\n Enter to confirm',
+  '❯ No, exit\n  Yes\nnot indented\n Enter to confirm',
   'Windows line\r\n❯ 1. Yes\r\n  2. No\r\n'
 ]
 
