@@ -134,7 +134,9 @@ pub fn sync_agy(core: &Core) -> Result<(), String> {
         _ => json!({}),
     };
     let obj = v.as_object_mut().ok_or("agy hooks.json is not an object; left untouched")?;
-    let entry = hook_exe().map(|exe| json!({ "PreToolUse": [{ "matcher": "write_file|edit_file", "hooks": [{ "type": "command", "command": format!("\"{}\" agy", p(&exe)), "timeout": HOOK_TIMEOUT_S }] }] }));
+    // agy runs the command through cmd with Go-style \" escapes, which cmd takes literally: the command must need no
+    // quotes, like Codex's. Its stderr ("not recognized", CP950) then broke agy's protobuf (live test 2026-11-13).
+    let entry = hook_exe().and_then(|exe| plain_path(&exe)).map(|cmd| json!({ "PreToolUse": [{ "matcher": "write_file|edit_file", "hooks": [{ "type": "command", "command": format!("{cmd} agy"), "timeout": HOOK_TIMEOUT_S }] }] }));
     let changed = match (want, entry) {
         (true, Some(e)) if obj.get(AGY_ENTRY) == Some(&e) => false,
         (true, Some(e)) => {
