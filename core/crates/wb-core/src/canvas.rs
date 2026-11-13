@@ -1060,6 +1060,8 @@ fn answer(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, req: &Value, a
             match now {
                 Some(p) if p.fingerprint == a.fingerprint && (if approve { p.can_approve } else { p.can_reject }) => {
                     core.write_pty(pty, if approve { wb_pty::approval::APPROVE_KEYS } else { wb_pty::approval::REJECT_KEYS });
+                    // A next question right behind this one must get its own card
+                    core.pty_reset_approval(pty);
                     Ok(())
                 }
                 _ => Err(err("stale-request", "The question on screen changed")),

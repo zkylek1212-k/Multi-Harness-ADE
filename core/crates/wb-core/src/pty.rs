@@ -739,6 +739,18 @@ impl Core {
     }
 
     /// Whether the program in this terminal turned on bracketed paste; None once it is gone
+    /// After the app answered a menu: forget that a prompt was showing, so the next check judges the screen afresh.
+    /// The Approval event fires only when a prompt appears; a CLI asking again right away never showed a screen
+    /// without one, so without this its second question got no card.
+    pub fn pty_reset_approval(&self, id: &str) {
+        let shared = self.pty.entries.lock().unwrap().get(id).map(|e| e.shared.clone());
+        if let Some(shared) = shared {
+            let mut l = shared.live.lock().unwrap();
+            l.needs_approval = false;
+            l.dirty = Some(Instant::now());
+        }
+    }
+
     pub fn pty_bracketed_paste(&self, id: &str) -> Option<bool> {
         let session = self.pty.entries.lock().unwrap().get(id).map(|e| e.session.clone())?;
         Some(session.with_mirror(|m| m.bracketed_paste()))
