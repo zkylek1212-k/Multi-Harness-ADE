@@ -1607,6 +1607,7 @@ export default function SettingsModal({
               <div className="macos-settings-body">
                 <CoworkSettings
                   value={settings.cowork}
+                  bypass={!!settings.cliBypassPermissions}
                   onChange={(cowork) => setSettings((prev) => ({ ...prev, cowork }))}
                 />
               </div>

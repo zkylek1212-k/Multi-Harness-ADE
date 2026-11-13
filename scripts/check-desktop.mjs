@@ -141,6 +141,17 @@ try {
   const errors = await p.errors()
   assert.ok(errors.some((e) => /Cannot open data:/.test(e || '')), 'the data: URL was refused')
   assert.deepEqual(errors.filter((e) => !/Cannot open data:/.test(e || '')), [])
+  await check('Cowork canvas settles instead of calling the backend in a loop', async () => {
+    p.eval(`(localStorage.setItem('wb-ui-mode', 'cowork'), location.reload(), true)`).catch(() => {})
+    await p.waitFor(`!!window.api && !!document.querySelector('.react-flow')`, 30000)
+    await p.waitFor(`document.body.innerText.includes('general')`)
+    await p.eval(`(window.__canvasCalls = 0, window.api.canvas.call = ((f) => (...a) => (window.__canvasCalls++, f(...a)))(window.api.canvas.call), true)`)
+    assert.match(await p.eval(`String(window.api.canvas.call)`), /__canvasCalls/, 'call counter installed')
+    // A measuring window, not a wait for state: a render loop calls many times a second, a settled view not at all
+    await sleep(2000)
+    assert.ok((await p.eval(`window.__canvasCalls`)) < 5, `canvas calls in 2 s: ${await p.eval(`window.__canvasCalls`)}`)
+    assert.equal(await Promise.race([p.eval(`window.api.settings.get().then(() => 'ok')`), sleep(5000).then(() => 'stuck')]), 'ok')
+  })
   await check('closing the window ends the app and its terminals', async () => {
     await p.eval(`window.api.pty.spawn({ command: 'cmd' })`)
     p.eval(`document.querySelector('#wb-window-controls button[data-act="close"]').click()`).catch(() => {})

@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useWorkbench, setLanguage as setStoreLanguage, type Language } from '@/store'
 
 export type { Language }
@@ -244,6 +245,7 @@ export const translations = {
       coworkHookCodexSub: 'Codex asks once to trust the hook (Hooks need review → Trust). Off: the card reads the screen.',
       coworkHookAgySub: 'Adds an entry to ~/.gemini/config/hooks.json. Approve still goes through Antigravity’s own edit review; Reject works.',
       coworkHookNote: 'Any failure hands the question back to the CLI’s own prompt; nothing is ever approved automatically. Bypass mode turns hooks off.',
+      coworkHookBypass: 'Bypass mode is on (CLI Launch Permissions & Bypass Mode): agents never ask, so Cowork shows no approval cards. Turn it off there to use these.',
       footerCoworkHint: 'Applies to nodes started after saving.'
     },
     memsync: {
@@ -964,6 +966,7 @@ export const translations = {
       coworkHookCodexSub: 'Codex 第一次會要求信任這個 hook（Hooks need review → Trust）。關閉時審批卡讀畫面。',
       coworkHookAgySub: '在 ~/.gemini/config/hooks.json 加一筆。允許仍會經過 Antigravity 自己的改檔審查；拒絕可直接生效。',
       coworkHookNote: '任何故障都會把問題交還給 CLI 自己的提示，不會自動放行。Bypass 模式下不掛 hook。',
+      coworkHookBypass: '目前開著略過模式（「CLI 啟動權限與略過模式」）：agent 不會詢問，Cowork 也不會出現核准卡片。要使用這裡的開關，請在那裡關掉略過模式。',
       footerCoworkHint: '儲存後新啟動的節點才套用。'
     },
     memsync: {
@@ -1507,9 +1510,11 @@ export function useTranslation(): {
 } {
   const { language } = useWorkbench()
 
-  const t = (key: TranslationKey | string, params?: Record<string, string | number>): string => {
-    return getTranslation(language, key, params)
-  }
+  // Stable per language: components put t in effect deps, and a new t every render re-ran those effects forever
+  const t = useCallback(
+    (key: TranslationKey | string, params?: Record<string, string | number>): string => getTranslation(language, key, params),
+    [language]
+  )
 
   return {
     t,

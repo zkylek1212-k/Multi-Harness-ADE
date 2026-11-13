@@ -18,7 +18,8 @@ export function sanitizeCoworkSettings(v: unknown): Required<Settings> {
   }
 }
 
-export default function CoworkSettings({ value, onChange }: { value: unknown; onChange: (v: Settings) => void }): JSX.Element {
+// Permission mode is the one shared CLI setting; under Bypass these switches have nothing to hook
+export default function CoworkSettings({ value, onChange, bypass }: { value: unknown; onChange: (v: Settings) => void; bypass: boolean }): JSX.Element {
   const { t } = useTranslation()
   const cw = sanitizeCoworkSettings(value)
   const cloud = /onedrive|dropbox|google ?drive|我的雲端硬碟|icloud/i.test(cw.worktreeRoot)
@@ -42,6 +43,7 @@ export default function CoworkSettings({ value, onChange }: { value: unknown; on
 
       <div className="macos-section">
         <span className="macos-section-header">{t('settings.coworkHookSection')}</span>
+        {bypass && <p style={{ margin: '0 4px 8px', color: 'var(--warn, var(--fg))', fontSize: 'var(--text-size-caption)', lineHeight: 1.5 }}>{t('settings.coworkHookBypass')}</p>}
         <div className="macos-inset-group">
           {HOOK_AGENTS.map((a) => (
             <div className="macos-row" key={a.id}>
@@ -54,6 +56,7 @@ export default function CoworkSettings({ value, onChange }: { value: unknown; on
                   <input
                     type="checkbox"
                     checked={cw.structuredApproval[a.id]}
+                    disabled={bypass}
                     onChange={(e) => onChange({ ...cw, structuredApproval: { ...cw.structuredApproval, [a.id]: e.target.checked } })}
                   />
                   <span className="apple-toggle-slider" />
