@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Before you upgrade / 升級前
+- 舊 Cowork 的會議與背景執行已移除。升級前請先把舊 Cowork 留下的 worktree 合併或收尾；升級後 Cowork 模式右欄的「舊 Cowork 的 worktree」只會列出它們，不會自動刪除。
+- The old Cowork meetings and background runs are removed. Merge or finish the worktrees the old Cowork left behind before upgrading. After upgrading, "Old Cowork worktrees" in the Cowork inspector only lists them; nothing is deleted automatically.
+
+### Changed / 變更
+- Cowork 改成第三種模式：一張可平移縮放的畫布，每個 Agent 是一個互動式終端節點，預設各自一個 worktree 與分支。可以在畫布上拉線交接（只產生草稿，不自動送出）、審批、提交、預覽後合併、清理或捨棄。
+- Cowork is now a third mode: a canvas you can pan and zoom, where each agent is an interactive terminal node with its own worktree and branch by default. On the canvas you draw handoffs, which only create drafts and send nothing. You also answer approvals, commit, merge after a preview, and clean up or discard.
+- 主席會議、任務看板、自動規劃與背景執行已移除，沒有對等替代。
+- Chair meetings, the task board, automatic planning and background runs are removed and have no direct replacement.
+
+### Added / 新增
+- 審批卡：能辨識的提示顯示「允許／拒絕」，認不出的只提供回終端回答。Claude Code（預設）與 Codex（需在 Codex 內信任一次）可在卡片上看到改動內容；故障一律交還給 CLI 自己的提示，不會自動放行。
+- Approval cards show Approve and Reject when the prompt is recognized; otherwise they only offer answering in the terminal. Claude Code (on by default) and Codex (after you trust the hook once inside Codex) show the change itself on the card. Any failure goes back to the CLI's own prompt and never approves.
+- 停止（Ctrl+Shift+Backspace）：對同一個 repo 的所有 Cowork 節點送一次中斷鍵；「全部結束」才會結束行程。
+- Stop (Ctrl+Shift+Backspace) sends one interrupt key to every Cowork node of the repository; "End all" ends the processes.
+- 代理設定：沿用系統環境（預設，與先前相同）、指定代理或強制直連，可依 Agent 個別改選；repo 內的設定不能改代理。
+- Proxy settings: inherit the system environment (the default, same as before), a custom proxy, or direct, with a per-agent choice. Repository settings cannot set a proxy.
+- 手機可以看 Channel、審批、傳訊息與停止；建立節點、合併與捨棄只在桌面。
+- On the phone you can view channels, answer approvals, send a message and stop. Creating nodes, merging and discarding stay on the desktop.
+
 ## [0.2.0] - 2026-11-09
 
 ### Changed / 變更

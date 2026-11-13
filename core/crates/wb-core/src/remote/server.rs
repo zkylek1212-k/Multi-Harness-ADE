@@ -57,8 +57,9 @@ const PAIR_MAX_FAILURES: u32 = 10;
 const PAIR_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // without 0/O and 1/I/L
 const PUSH_SUBJECT: &str = "https://github.com/zkylek1212-k/Multi-Harness-ADE";
 const MAX_BACKLOG: usize = 8 * 1024 * 1024;
-pub const PHONE_COWORK_OPS: [&str; 29] = ["capabilities", "models", "list", "get", "start", "cancel", "discuss", "summarizer", "summarize", "retry", "drop", "note", "feedback", "dismiss", "approve", "raiseLimits", "delete", "execPreview", "execDiff", "execStart", "execMessage", "execRetry", "execAcceptScope", "execRevertScope", "execWaive", "execPause", "execResume", "execMerge", "execCleanup"];
-pub const PHONE_AUDITED_OPS: [&str; 8] = ["approve", "execStart", "execAcceptScope", "execRevertScope", "execWaive", "execMerge", "execCleanup", "delete"];
+/// Cowork 2.0 on the phone (cowork2.0-implement.md §3.9): read, answer approvals, send a message, stage-1 stop. Everything else is desktop-only.
+pub const PHONE_CANVAS_OPS: [&str; 9] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
+pub const PHONE_AUDITED_OPS: [&str; 7] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
 const BUILTIN: [(&str, &str, &str); 5] = [("claude", "Claude Code", "agent"), ("codex", "Codex", "agent"), ("antigravity", "Antigravity", "agent"), ("powershell", "PowerShell", "shell"), ("cmd", "Command Prompt", "shell")];
 
 // A preview iframe is on another port, maybe another computer, so frame-src cannot be just 'self'. A framed page reaches nothing here.
@@ -924,7 +925,7 @@ impl Bridge {
             }
         };
         // Keystrokes must stay in order, so most things finish before the next message is read. Long jobs must not hold up typing.
-        if matches!(t.as_str(), "cowork" | "git" | "spawn" | "files" | "file" | "status") {
+        if matches!(t.as_str(), "canvas" | "git" | "spawn" | "files" | "file" | "status") {
             tokio::spawn(work);
         } else {
             work.await;
@@ -1096,22 +1097,23 @@ impl Bridge {
                 }
                 c.send(&out);
             }
-            "cowork" => {
+            "canvas" => {
                 let op = sv(msg, "op").to_string();
                 let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
-                if !PHONE_COWORK_OPS.contains(&op.as_str()) {
-                    c.send(&json!({ "t": "cowork", "reqId": req_id, "result": { "ok": false, "code": "not-allowed" } }));
-                    return Ok(());
-                }
-                let args: Vec<Value> = msg.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
-                let result = match self.workspace_of(&core, window) {
-                    Some(ws) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::cowork_ipc::wrap(crate::cowork_ipc::invoke(&core, &op, &ws, &args)))).unwrap_or_else(|_| json!({ "ok": false, "code": "internal" })),
-                    None => json!({ "ok": false, "code": "no-workspace" }),
+                let req = msg.get("req").cloned().unwrap_or(Value::Null);
+                let result = if !PHONE_CANVAS_OPS.contains(&op.as_str()) {
+                    json!({ "ok": false, "code": "not-allowed" })
+                } else {
+                    match self.workspace_of(&core, window) {
+                        Some(ws) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::canvas::phone_call(&core, &ws, &op, &req))).unwrap_or_else(|_| json!({ "ok": false, "code": "internal" })),
+                        None => json!({ "ok": false, "code": "no-workspace" }),
+                    }
                 };
-                if PHONE_AUDITED_OPS.contains(&op.as_str()) {
-                    store.audit(&format!("cowork.{op}"), cowork_audit(&op, &args, &result, device_id.as_deref()));
+                // Refusals are audited too: an op outside the whitelist is exactly what the log is for
+                if PHONE_AUDITED_OPS.contains(&op.as_str()) || !PHONE_CANVAS_OPS.contains(&op.as_str()) {
+                    store.audit(&format!("canvas.{}", js_prefix(&op, 40)), canvas_audit(&op, &req, &result, device_id.as_deref()));
                 }
-                c.send(&json!({ "t": "cowork", "reqId": req_id, "result": result }));
+                c.send(&json!({ "t": "canvas", "reqId": req_id, "result": crate::canvas::for_phone(result) }));
             }
             "files" => {
                 let path = sv(msg, "path");
@@ -1195,7 +1197,13 @@ impl Bridge {
         list.sort_by_key(|s| s["startTime"].as_u64().unwrap_or(0));
         let sessions: Vec<Value> = list.iter().filter_map(|s| {
             let owner = s["ownerId"].as_u64()? as u32;
-            windows.iter().any(|(w, _)| *w == owner).then(|| ())?;
+            // Cowork canvas nodes belong to no window (owner 0): show them under a window that has their repo open
+            let owner = if owner == 0 {
+                let same = |a: &str, b: &str| resolve(a).replace('\\', "/").trim_end_matches('/').eq_ignore_ascii_case(resolve(b).replace('\\', "/").trim_end_matches('/'));
+                windows.iter().find(|(_, ws)| same(ws, sv(s, "workspace")))?.0
+            } else {
+                windows.iter().any(|(w, _)| *w == owner).then_some(owner)?
+            };
             let id = sv(s, "id");
             let launcher = s.get("launcherId").and_then(Value::as_str).filter(|l| !l.is_empty()).unwrap_or(sv(s, "command"));
             let name = basename(sv(s, "workspace"));
@@ -1263,16 +1271,13 @@ impl Bridge {
         self.push(id, "approval", json!({ "title": format!("⏳ {title} 等待你的回覆"), "body": body, "tag": format!("approval-{id}"), "url": format!("/#s={id}") }));
     }
 
-    /// The Cowork run goes to phones without `context`, which is skill and project text a phone has no use for
-    pub fn on_cowork(&self, run: &Value) {
+    /// A canvas change, stripped of file contents (§3.9: the phone gets file names and line counts, never code)
+    pub fn on_canvas(&self, update: &Value) {
         if self.clients.lock().unwrap().is_empty() {
             return;
         }
-        let mut r = run.clone();
-        if let Some(o) = r.as_object_mut() {
-            o.shift_remove("context");
-        }
-        self.broadcast(&json!({ "t": "coworkRun", "run": r }), |c| c.visible.load(Ordering::SeqCst));
+        let u = crate::canvas::for_phone(json!({ "ok": true, "data": update }))["data"].take();
+        self.broadcast(&json!({ "t": "canvasUpdate", "update": u }), |c| c.visible.load(Ordering::SeqCst));
     }
 
     pub fn report_vibe_status(&self, window: u32, status: &Value) {
@@ -1315,15 +1320,15 @@ impl Bridge {
     }
 }
 
-/// Content identifiers only (run, hash, commit); never a reason's text or anything secret
-fn cowork_audit(op: &str, args: &[Value], result: &Value, device_id: Option<&str>) -> Value {
-    let ids: Vec<Value> = args.iter().map(|v| match v {
-        Value::String(s) => json!(js_prefix(s, 80)),
-        Value::Object(o) => json!({ "commit": o.get("commit"), "targetHead": o.get("targetHead"), "approval": o.get("approval"), "waived": o.get("waive").is_some_and(crate::settings::truthy), "mode": o.get("mode") }),
-        other => other.clone(),
-    }).collect();
-    let shown = if op == "execWaive" { &ids[..ids.len().min(2)] } else { &ids[..] };
-    let mut row = json!({ "deviceId": device_id, "args": shown, "ok": result["ok"] });
+/// Identifiers only (channel, node, request, generation) plus sizes; never message or reason text
+fn canvas_audit(op: &str, req: &Value, result: &Value, device_id: Option<&str>) -> Value {
+    let id = |k: &str| req.get(k).and_then(Value::as_str).map(|s| json!(js_prefix(s, 80))).unwrap_or(Value::Null);
+    let len = |k: &str| req.get(k).and_then(Value::as_str).map(|s| json!(js_len(s))).unwrap_or(Value::Null);
+    let mut row = json!({
+        "deviceId": device_id, "op": js_prefix(op, 40), "channelId": id("channelId"), "nodeId": id("nodeId"),
+        "requestId": id("requestId"), "sessionGeneration": id("sessionGeneration"), "textLength": len("text"), "reasonLength": len("reason"), "ok": result["ok"],
+        "messageId": id("messageId"), "teamId": id("teamId"),
+    });
     if result["ok"] != json!(true) {
         row["code"] = result["code"].clone();
     }
@@ -1451,11 +1456,11 @@ mod tests {
 
     #[test]
     fn audit_keeps_identifiers_only() {
-        let a = cowork_audit("execWaive", &[json!("run"), json!("t1"), json!("a secret reason"), json!(true)], &json!({ "ok": true }), Some("d"));
+        let a = canvas_audit("node.reject", &json!({ "channelId": "c", "nodeId": "n", "requestId": "r", "sessionGeneration": "g", "reason": "a secret reason" }), &json!({ "ok": true }), Some("d"));
         assert!(!a.to_string().contains("secret"));
-        let b = cowork_audit("execMerge", &[json!("r"), json!({ "commit": "c", "waive": "text", "other": "x" })], &json!({ "ok": false, "code": "stale" }), Some("d"));
-        assert_eq!(b["code"], "stale");
-        assert_eq!(b["args"][1]["waived"], true);
-        assert!(!b.to_string().contains("\"other\""));
+        assert_eq!((a["requestId"].as_str(), a["reasonLength"].as_u64()), (Some("r"), Some(15)));
+        let b = canvas_audit("node.message", &json!({ "text": "rm -rf secret", "other": "x" }), &json!({ "ok": false, "code": "stale-request" }), Some("d"));
+        assert_eq!(b["code"], "stale-request");
+        assert!(!b.to_string().contains("secret") && !b.to_string().contains("\"other\""));
     }
 }

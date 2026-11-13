@@ -243,11 +243,16 @@ pub fn commit_all(dir: &Path, message: &str, hooks_dir: Option<&str>) -> Result<
     if git(dir, &["diff", "--cached", "--quiet"]).is_ok() {
         return Ok(None);
     }
+    commit_staged(dir, message, hooks_dir).map(Some)
+}
+
+/// Commit the reviewed index without staging any additional paths.
+pub fn commit_staged(dir: &Path, message: &str, hooks_dir: Option<&str>) -> Result<String> {
     let mut args = hook_args(hooks_dir);
     args.extend(identity(dir));
     args.extend(["commit", "-q", "-m", message].iter().map(|s| s.to_string()));
     git(dir, &strs(&args))?;
-    Ok(Some(git(dir, &["rev-parse", "HEAD"])?.trim().to_string()))
+    Ok(git(dir, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
 fn split_nul(s: &str) -> Vec<String> {

@@ -1,6 +1,6 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
-members = [ "apps/desktop", "apps/wb-ipc", "crates/wb-proc", "crates/wb-git", "crates/wb-secrets", "crates/wb-pty", "crates/wb-core"]
+members = [ "apps/desktop", "apps/wb-ipc", "apps/wb-hook", "crates/wb-proc", "crates/wb-git", "crates/wb-secrets", "crates/wb-pty", "crates/wb-core"]
 
 [workspace.package]
 edition = "2021"

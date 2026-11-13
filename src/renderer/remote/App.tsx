@@ -483,7 +483,7 @@ function Main({
     screen = <DetailView conn={conn} view={view} workspace={w?.workspaceName || ''} hostName={hostName} onBack={goHome} />
   } else if (view.kind === 'cowork') {
     const w = windows.find((x) => x.id === view.windowId)
-    screen = <CoworkView key={view.windowId} conn={conn} windowId={view.windowId} workspace={w?.workspaceName || ''} hostName={hostName} onBack={goHome} />
+    screen = <CoworkView key={view.windowId} conn={conn} windowId={view.windowId} workspace={w?.workspaceName || ''} hostName={hostName} onBack={goHome} onOpenSession={(id) => setView({ kind: 'session', id })} />
   } else if (view.kind === 'status' || view.kind === 'file') {
     const w = windows.find(x => x.id === view.windowId)
     const windowId = view.windowId
@@ -882,7 +882,7 @@ function NewTerminalSheet({
           </IconMark>
           <span>
             {t('cowork')}
-            <span className="card-sub launcher-sub">{t('cwNewHint')}</span>
+            <span className="card-sub launcher-sub">{t('cv_openHint')}</span>
           </span>
         </button>
       </div>

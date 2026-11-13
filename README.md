@@ -1,15 +1,15 @@
 # Multi-Harness-ADE — Agent Workbench
 
 A lightweight, **agent-native** developer workbench: a Monaco code editor, a Git
-visualizer, N embedded CLI terminals, and Cowork multi-agent meetings. Built with Tauri, Rust +
+visualizer, N embedded CLI terminals, and a Cowork canvas of agent terminals. Built with Tauri, Rust +
 React + Vite.
 
 *English is the primary language of this README; a 繁體中文 version follows below.*
 
 > **Design principle — official CLIs own the agent runtime.** The workbench uses
 > each vendor's official CLI and its existing authentication. It provides code
-> editing, Git, terminals, shared memory, and Cowork coordination; Cowork schedules
-> CLI calls, stores meeting records, and runs explicitly approved project plans.
+> editing, Git, terminals, shared memory, and the Cowork canvas, where you run several
+> CLIs side by side, each in its own Git worktree, and decide what gets merged.
 > Cross-CLI handoffs use `.project-memory/` (handoff notes + Git).
 
 ## Features
@@ -22,7 +22,7 @@ React + Vite.
 - **Multi-CLI terminals** — each CLI gets its own `xterm.js` terminal tab, run
   natively as a child process via `node-pty`. No keys stored; the CLIs use their
   own subscriptions/auth.
-- **Cowork meetings** — independent tabs for Claude Code, Codex, and Antigravity; visible discussion, a selectable recorder, chair conclusions, code-aware project planning, and background execution after user approval. See [Cowork](#cowork) and its [rendered architecture](docs/architecture.html#cowork).
+- **Cowork canvas** — a third mode: Claude Code, Codex, Antigravity and your own launchers as interactive terminal nodes on a pannable, zoomable canvas, each in its own worktree. Approval cards, drawn handoffs, commit / merge / discard with previews, and a repository-wide stop. See [Cowork](#cowork).
 - **Adjustable layout** — drag the terminal and editor icons in the title bar to swap their sides, and switch each pane on or off.
 - **Preview & Documents** — live Markdown / HTML preview that auto-syncs on edit and save, plus built-in document viewing for Word, Excel, PowerPoint, and PDF.
 - **Vibe Coding Mode** — an alternative, task-first layout (Settings → Appearance → Work Mode): an icon rail (Sessions / Status / Handoff / Files / Git / Settings) whose panels fade in on hover and pin on click, the agent terminal in the middle, and the live result on the right. Dev-server URLs printed in the terminal (`http://localhost:PORT`) open automatically, and the Handoff panel summarises `.project-memory/handoff.md`. Developer Mode keeps the classic code-first layout.
@@ -43,26 +43,18 @@ The executable, arguments, paths, and enable switch are local user settings, nev
 
 ## Cowork
 
-1. Open **Terminals → + → Cowork**, or choose the Cowork card in **New Terminal**. Each opening creates an independent tab.
-2. Choose **Discussion** for a conversation (ordinary folders work too), or **Project** for planning against a Git repository. Select participants, a chair, and models from the installed CLIs' catalogs; model names include their versions. Custom model input is not offered.
-3. In Discussion, the chair speaks first and participants respond in order, seeing earlier public replies. Replies appear when each call completes; startup and first-output timings show progress. Send a follow-up to start another round, retry a failed speaker, or explicitly skip that speaker.
-4. Select a recorder and choose on-demand/context-limit summaries or a summary after every round. Records contain consensus, disagreements, and open questions; original messages remain available. **Ask the chair to conclude** produces a recommendation for your decision.
-5. A current chair conclusion can populate an editable Project proposal. Starting that proposal runs a fresh code-aware planning and review process. Review its task board and unresolved issues, then approve before executing. Further discussion makes the earlier conclusion stale and requires a new conclusion before conversion.
-6. Review background task results, then merge or clean up the execution worktrees. If an agent changed files outside its task scope, Cowork does not commit them: the task stops so you can revert those files, accept them, or follow up. Each task shows why the chair assigned it, and dependent tasks receive the earlier task's changed files (from Git) and its reported interfaces, checks and unverified points. When any task changes package.json or a lockfile, worktrees install their own dependencies instead of sharing `node_modules`. Closing a Cowork tab only closes its view; use **Cancel meeting** to stop a meeting. Saved meetings can be reopened from history; tab layouts and unsent drafts are session-local.
+Cowork is a canvas mode for running several agents at once in one Git repository. It replaced the earlier meeting and planning Cowork in 2026-11; chair meetings, the task board and background runs are gone.
 
-**Settings → Cowork** controls default participants, chair, recorder, per-agent model/effort, and budgets for new meetings. Automatic effort uses lower effort for discussion, medium for opening proposals and summaries, and higher for review and conclusions, where the model supports it. Explicit effort choices take precedence.
+1. Switch to **Cowork** (Settings → Work Mode, the mode switch on the canvas, or **Terminals → + → Cowork**). A channel called *general* is created the first time; a channel is one canvas with its nodes, handoffs and events.
+2. Drag an agent from the left onto the canvas, or press **+** next to it. Each node is the agent's real interactive terminal, started in its own worktree (`.cowork/<channel>/<node>`, branch `cowork/<channel>/<node>`). Tick *New nodes work in the repository root* to run one node directly in the root instead; only one such node per repository.
+3. When an agent asks for permission, the node's border changes and an approval card appears under it. **Approve** and **Reject** appear only when the question and its options are recognized; otherwise the card sends you to the terminal. With structured approval (Settings → Cowork) the card shows the change itself. Any failure hands the question back to the CLI's own prompt and never approves.
+4. Drag from one node's right edge to another's left edge to create a **handoff**: a draft with the source branch, commits, changed files and uncommitted state, taken from Git. It is never sent automatically. Copy it, or **Paste into terminal**, which uses bracketed paste and never presses Enter.
+5. In the inspector on the right: view changes (committed, staged, unstaged, untracked), **Commit all changes** with your message, **Preview** and **Merge** into the branch you pick, **Clean up** a merged worktree, or **Discard** one after a preview that lists every file, including ignored ones. Merge and discard previews are bound to the commits and files they showed: anything that changes in between means previewing again.
+6. **Stop** (or Ctrl+Shift+Backspace) sends one interrupt key to every running Cowork node of the repository, in every channel and window, and refuses new nodes, pastes and approvals. **End all** then ends the processes; **Clear stop** only lets the app accept new actions again.
 
-| Budget | Default | Settings range |
-| --- | --- | --- |
-| Planning/discussion CLI calls | 6 | 3–30 |
-| Active planning/discussion time | 20 minutes | 1–120 minutes |
-| Background execution time | 60 minutes | 1–600 minutes |
+Closing a node ends its process and keeps its worktree. Closing the app keeps the canvas and worktrees; after a restart every node shows as ended and can be started again. Zoom out below half size and nodes show a placeholder instead of a live terminal. Channels are stored in the repository's Git directory (`.git/cowork/`), so they are never committed.
 
-These are call/time budgets, not a currency or token spending cap. Summaries, chair conclusions, and repair calls also consume planning calls. A round uses one call per active speaker, so its remaining count depends on participants and summarization. Waiting for user input does not consume active planning time. Reaching a limit pauses the flow for an explicit budget increase; the service ceiling is 60 calls / 240 planning minutes, while the Discussion increase button caps at 30 calls / 120 minutes. Settings changes apply to new meetings.
-
-Multiple discussions and project-planning meetings may run concurrently, including in the same repository. **Actual background execution is limited to one run per repository until its execution is merged or cleaned up**; paused/review worktrees still hold that slot. Different repositories may execute concurrently. All tabs share each provider's account quota.
-
-Open the rendered [Cowork architecture and meeting flow](docs/architecture.html#cowork) in a browser. [Implementation notes](docs/cowork-architecture.md) cover storage, CLI isolation, scheduling and recovery.
+**Settings → Cowork** sets where worktrees go (keep them outside OneDrive-style synced folders) and turns structured approval on per CLI. It is on by default for Claude Code, where it affects only Cowork sessions. Codex asks once, inside Codex, to trust the hook. For Antigravity an entry is added to `~/.gemini/config/hooks.json`; its Approve still passes through Antigravity's own edit review, while Reject works directly. With bypass mode on, no hook is installed.
 
 ## Memory sync
 
@@ -147,7 +139,9 @@ Build config is in `core/apps/desktop/tauri.conf.json`. Publishing needs `TAURI_
 core/            Rust backend: wb-core (one handler per IPC channel), wb-pty, wb-git, wb-proc, wb-secrets
 core/apps/desktop  Tauri app: windows, dialogs, and the pipe between each page and wb-core
 src/desktop      The page's side of that pipe, window frame and embedded browser element
-src/main/cowork   meeting orchestration, CLI runner, persistence, Git and execution
+core/crates/wb-core/src/canvas.rs  Cowork channels, node lifecycle, approvals, handoffs and stop
+core/crates/wb-core/src/worktree.rs  node worktrees: create, changes, commit, merge, cleanup, discard
+core/apps/wb-hook  the permission hook the CLIs run for structured approval (named pipe to the app)
 src/main/remote  LAN remote bridge: HTTPS + WebSocket, local CA, web push, preview proxy
 src/main/memsync memory sync core (GitHub / OneDrive / Google Drive) and bundled memory scripts
 src/preload      the single IPC contract surface
@@ -155,7 +149,7 @@ src/renderer/src React UI (editor / git / terminal / preview / dashboard panels)
 src/renderer/remote  the iPhone web app (second Vite entry, served by the bridge)
 src/shared       types and logic both sides use (remote protocol, detectors)
 docs/architecture.html  end-to-end architecture overview
-docs/cowork-architecture.md  Cowork flows and implementation boundaries
+docs/cowork-architecture.md  the previous Cowork (meetings), kept as a record
 .project-memory  shared cross-agent memory (handoff, protocol, decisions); local-only, not tracked in this repository
 dev.cmd / dev.ps1  double-click launcher for the dev build (Windows)
 ```
@@ -196,10 +190,11 @@ What you can do from the phone:
 - **Approval cards.** When an agent stops to ask, the question and its options become
   buttons, and *Running / Waiting / Idle* is decided by the computer, not by the phone's
   clock.
-- **Cowork.** Open **New Terminal → Cowork** to list meetings and start one with mode,
-  participants, chair, models/effort, recorder, summary timing and limits. Follow the discussion and
-  task board live, and answer, approve, retry, run, pause, merge or clean up from the phone.
-  You can skip a failed speaker, turn a chair conclusion into a Project proposal, and delete finished meetings. Board editing stays on the desktop.
+- **Cowork.** Open **New Terminal → Cowork** to see the channels of that workspace, each
+  node's status and its approval card, and the event timeline. From the phone you can approve
+  or reject, paste a message into a node and stop. Creating nodes, merging, discarding, ending
+  all and clearing a stop stay on the desktop. Approval cards show file names and line counts,
+  never code.
 - **Up to three computers, one at a time.** The phone remembers up to three computers. The
   title on the home screen is a dropdown that switches between them **without reloading** —
   the app just points its WebSocket at the computer you picked. Add one by its LAN address
@@ -291,11 +286,11 @@ the Apache License 2.0.
 # 繁體中文說明
 
 一個輕量、**agent-native** 的開發工作台：Monaco 程式碼編輯器、Git 視覺化面板，以及
-N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Tauri、Rust + React + Vite 打造。
+N 個內嵌 CLI 終端，以及放 agent 終端的 Cowork 畫布。以 Tauri、Rust + React + Vite 打造。
 
 > **設計原則——由官方 CLI 負責 agent runtime。** 工作台使用各廠商的官方 CLI 與既有登入，
-> 提供編輯、Git、終端、共享記憶，以及 Cowork 協調。Cowork 排程 CLI 呼叫、保存會議紀錄，
-> 並執行使用者明確核准的專案計畫。跨 CLI 交接透過 `.project-memory/`（handoff 筆記 + Git）完成。
+> 提供編輯、Git、終端、共享記憶，以及 Cowork 畫布：多個 CLI 並排、各自在自己的 Git worktree，
+> 要合併什麼由你決定。跨 CLI 交接透過 `.project-memory/`（handoff 筆記 + Git）完成。
 
 ## 功能
 
@@ -304,7 +299,7 @@ N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Tauri、Rust + Rea
 - **Git 面板**——狀態、暫存、commit、切換分支、commit graph，以及最近 commit／檔案 diff。
 - **多 CLI 終端**——每個 CLI 各有一個 `xterm.js` 終端分頁，透過 `node-pty` 以子行程原生執行。
   不儲存金鑰；CLI 使用其自身的訂閱／驗證。
-- **Cowork 多 agent 會議**——獨立分頁、可見討論、指定摘要 agent、主席結論、專案規劃與核准後背景執行。支援 Claude Code、Codex、Antigravity；詳見下方〈Cowork 使用方式〉及 [架構圖](docs/architecture.html#cowork)。
+- **Cowork 畫布**——第三種模式：Claude Code、Codex、Antigravity 與自訂 launcher 以互動式終端節點放在可平移縮放的畫布上，各自一個 worktree。審批卡、拉線交接、預覽後提交／合併／捨棄，以及整個 repo 的停止。詳見下方〈Cowork 使用方式〉。
 - **可調整版面**——拖曳標題列的終端與編輯器圖示交換左右位置，並可各自開關。
 - **預覽與文件**——Markdown／HTML 即時預覽（編輯與存檔自動同步），並內建 Word、Excel、PowerPoint 與 PDF 檢視器。
 - **Vibe Coding 模式**——任務優先的另一種版面（設定 → 外觀 → 工作模式）：最左側圖示列（Sessions／Status／Handoff／Files／Git／Settings）游標移過去就淡入彈出、點擊可固定；中間是 Agent 終端，右側是即時成品。終端輸出的 dev server 網址（`http://localhost:PORT`）會自動開啟，Handoff 面板會整理 `.project-memory/handoff.md`。開發者模式維持原本程式碼優先的版面。
@@ -325,24 +320,18 @@ N 個內嵌 CLI 終端，以及 Cowork 多 agent 會議。以 Tauri、Rust + Rea
 
 ## Cowork 使用方式
 
-從 **Terminals → + → Cowork** 或 **New Terminal 的 Cowork 卡片**開啟；每次開啟都是獨立分頁。
+Cowork 是在同一個 Git repo 同時跑多個 agent 的畫布模式。2026-11 起取代原本的會議／規劃版 Cowork；主席會議、任務看板與背景執行已移除。
 
-- **Discussion 討論**：主席先發言，參與者依序看到前面的公開回覆並接續討論。一般資料夾也能使用。每次呼叫完成後顯示回覆，過程可查看啟動與首次輸出時間；追問會啟動下一輪。失敗時可重試或明確跳過該 agent。
-- **摘要與主席結論**：指定參與者作為摘要 agent，選擇按需／上下文達門檻時摘要，或每輪摘要。累積紀錄整理共識、歧見與待確認事項，原始訊息仍保留。「請主席總結」提出建議供使用者拍板；繼續追問後，必須重新總結才能轉專案。
-- **Project 專案**：可把最新主席結論轉成可編輯提案，或直接開始 Project。系統重新讀取 Git 專案、形成方案、獨立審查並由主席整合；使用者確認任務板與未決事項、核准後，才在 worktree 背景執行。完成後由使用者檢視、合併或清理。每個任務會顯示主席的指派理由；agent 若改到任務範圍以外的檔，這些改動不會 commit，任務會停下讓你還原、接受或追問。下游任務會拿到前置任務以 Git 取得的改動清單，以及它回報的介面、已驗證與未驗證事項。有任務會改 package.json 或 lockfile 時，worktree 不共用 `node_modules`，改由各自安裝。
-- **設定與預算**：Settings → Cowork 可調整參與者、主席、摘要 agent、模型／強度，以及新會議預算。模型顯示完整版本，沒有 Custom 輸入。自動強度依討論、摘要、審查等階段分配，手動選擇優先。
+1. 切到 **Cowork**（設定 → 工作模式、畫布上方的模式切換，或 **Terminals → + → Cowork**）。第一次會自動建立名為 *general* 的 Channel；一個 Channel 就是一張畫布，包含節點、交接與事件。
+2. 把左欄的 agent 拖到畫布，或按旁邊的 **+**。每個節點就是該 agent 真正的互動式終端，在自己的 worktree（`.cowork/<channel>/<node>`、分支 `cowork/<channel>/<node>`）啟動。勾選「新節點直接在 repo 根目錄工作」可讓節點直接在根目錄跑，同一個 repo 只允許一個。
+3. Agent 要求權限時，節點邊框變色，下方出現審批卡。只有認得出問題與選項時才有「允許／拒絕」，否則請到終端回答。開啟結構化審批（設定 → Cowork）時卡片會顯示改動內容。任何故障都交還給 CLI 自己的提示，不會自動放行。
+4. 從一個節點的右緣拉到另一個節點的左緣就建立**交接**：由 Git 取得來源分支、commits、改動檔案與未提交狀態組成的草稿，不會自動送出。可以複製，或按「貼入終端」（bracketed paste，不送 Enter）。
+5. 右欄 Inspector：查看改動（已提交、已暫存、未暫存、未追蹤），輸入訊息「提交全部改動」，**預覽**後**合併**到你選的分支，**清理**已合併的 worktree，或在列出所有檔案（含忽略檔）的預覽後**捨棄**。合併與捨棄的預覽綁定當下的 commit 與檔案，之間有任何變動都要重新預覽。
+6. **停止**（或 Ctrl+Shift+Backspace）對這個 repo 所有執行中的 Cowork 節點（跨 Channel 與視窗）送一次中斷鍵，並拒絕新節點、貼入與審批放行。**全部結束**才會結束行程；**解除停止**只讓 App 重新接受操作。
 
-| 預算 | 預設 | 設定範圍 |
-| --- | --- | --- |
-| 討論／規劃 CLI 呼叫 | 6 次 | 3–30 次 |
-| 討論／規劃有效運作時間 | 20 分鐘 | 1–120 分鐘 |
-| 背景執行時間 | 60 分鐘 | 1–600 分鐘 |
+關閉節點會結束行程、保留 worktree。關閉 App 會保留畫布與 worktree；重開後所有節點顯示為已結束，可重新啟動。縮小到一半以下時節點改顯示靜態畫面。Channel 存在 repo 的 Git 目錄（`.git/cowork/`），不會被 commit。
 
-這是呼叫／時間預算，不是金額或 token 上限。每輪依發言人數耗用呼叫，摘要、主席結論與格式修復也計入；等待使用者輸入不消耗有效規劃時間。達到上限後暫停，可明確提高該會議預算；服務最高為 60 次／240 分鐘，Discussion 增額按鈕上限為 30 次／120 分鐘。設定變更套用至新會議。
-
-同一 repository 可同時開多場討論與規劃，但**實際背景執行同時限一場，直到合併或清理該次執行**；暫停或等待檢視的 worktree 仍占用名額。不同 repository 可同時執行，各分頁共用供應商帳號用量。關閉分頁只關閉畫面，要停止會議請按 Cancel meeting；紀錄可從歷史重新開啟，分頁版面與未送出草稿只保留於本次程式執行。
-
-以瀏覽器開啟 [架構總覽的 Cowork 章節](docs/architecture.html#cowork)，可查看已渲染的模組架構與會議流程圖；資料保存、隔離與恢復細節見 [實作筆記](docs/cowork-architecture.md)。
+**設定 → Cowork** 設定 worktree 的位置（請放在 OneDrive 這類同步資料夾外），以及各家的結構化審批。Claude Code 預設開啟，只影響 Cowork 的 session。Codex 第一次要在 Codex 裡信任這個 hook。Antigravity 會在 `~/.gemini/config/hooks.json` 加一筆；允許仍要經過 Antigravity 自己的改檔審查，拒絕可直接生效。Bypass 模式下不掛 hook。
 
 ## 記憶同步
 
@@ -425,7 +414,9 @@ npm run release    # （僅限專案維護者）一鍵自動編譯、打包並�
 core/            Rust 後端：wb-core（每個 IPC 頻道一個處理函式）、wb-pty、wb-git、wb-proc、wb-secrets
 core/apps/desktop  Tauri app：視窗、對話框，以及頁面與 wb-core 之間的通道
 src/desktop      頁面這端的通道、視窗框與內嵌瀏覽器元素
-src/main/cowork   會議協調、CLI runner、保存、Git 與背景執行
+core/crates/wb-core/src/canvas.rs  Cowork Channel、節點生命週期、審批、交接與停止
+core/crates/wb-core/src/worktree.rs  節點 worktree：建立、改動、提交、合併、清理、捨棄
+core/apps/wb-hook  CLI 執行的結構化審批 hook（以 named pipe 連到 App）
 src/main/remote  區網遠端橋接：HTTPS + WebSocket、本機 CA、Web Push、預覽代理
 src/main/memsync 記憶同步核心（GitHub／OneDrive／Google Drive）與內建的記憶腳本
 src/preload      唯一的 IPC 契約介面
@@ -433,7 +424,7 @@ src/renderer/src React UI（editor / git / terminal / preview / dashboard 面板
 src/renderer/remote  iPhone 端網頁 App（第二個 Vite entry，由橋接層提供）
 src/shared       兩端共用的型別與邏輯（遠端協定、各種偵測）
 docs/architecture.html  端到端架構總覽
-docs/cowork-architecture.md  Cowork 功能流程與模組邊界
+docs/cowork-architecture.md  舊版 Cowork（會議）的紀錄
 .project-memory  跨 agent 共享記憶（handoff、protocol、decisions）；僅存本機，不納入版控
 dev.cmd / dev.ps1  Windows 雙擊啟動開發版
 ```
@@ -454,7 +445,7 @@ dev.cmd / dev.ps1  Windows 雙擊啟動開發版
 - **以工作區為單位**：電腦上每個專案視窗在手機上就是一個區塊，各自有自己的終端、交接筆記（**該工作區**的 `.project-memory/handoff.md`）與 Git 狀態。最近用過但目前沒有視窗的工作區列在**其他工作區**，點一下讓電腦開起來並直接跳到「新增終端」。
 - **閱讀／終端／預覽**：「閱讀」把終端輸出整理成手機讀得懂的樣子（接回軟換行、去掉 TUI 框線）；「終端」是真正可以打字的 xterm，預設自動配合手機寬度，不需要左右拖（在 ⋯ 選單關掉就回到電腦的寬度）；「預覽」在終端印出本機 dev server 網址時出現，把那個網站以 HTTPS 代理過來顯示。
 - **審批卡片**：agent 停下來問你時，問題與選項會變成按鈕；「執行中／等你回覆／閒置」由電腦判定，不是用手機的時鐘去猜。
-- **Cowork**：從「新增終端 → Cowork」查看會議列表；開會時可設定模式、與會者、主席、模型／強度、摘要 Agent、摘要時機與預算。即時跟著討論與任務板，並在手機上追問、核准、略過失敗發言人、提高預算後重試、執行、暫停、合併或清理，也可把主席結論轉成 Project 提案、刪除已結束會議。任務板編輯仍在桌面。
+- **Cowork**：從「新增終端 → Cowork」查看該工作區的 Channel、各節點狀態與審批卡，以及事件時間軸。手機上可以允許或拒絕、把訊息貼進節點，以及停止；建立節點、合併、捨棄、全部結束與解除停止只在桌面。審批卡只顯示檔名與增減行數，不顯示程式碼。
 - **最多三台電腦、一次連一台**：手機會記住最多三台電腦，主畫面的標題就是切換用的下拉選單，**切換不會重新載入**——App 只是把 WebSocket 指向你選的那台。用區網位址新增（設定 →「電腦」→ 新增電腦，或在配對畫面直接加），各配對一次，同一份清單也能改名與移除。兩件要知道的事：每台電腦的憑證要在手機上各裝一次（連不到時配對畫面會直接給你那台的憑證安裝頁連結）；通知只會來自送來這個 App 的那台電腦，因為 Web Push 訂閱綁在單一網址上。
 
 安全設計：

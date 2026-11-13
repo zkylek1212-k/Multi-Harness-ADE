@@ -49,10 +49,10 @@ pub(crate) fn b64u(b: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(b)
 }
 
-/// Called with every Cowork change
-pub fn on_cowork_update(core: &Core, run: &Value) {
+/// Called with every Cowork canvas change (a CanvasUpdate)
+pub fn on_canvas_update(core: &Core, update: &Value) {
     if let Some(f) = core.features.get() {
-        f.remote.bridge.on_cowork(run);
+        f.remote.bridge.on_canvas(update);
     }
 }
 

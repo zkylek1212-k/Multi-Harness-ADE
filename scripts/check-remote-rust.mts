@@ -15,11 +15,11 @@ import { createInterface } from 'node:readline'
 import { WebSocket, WebSocketServer } from 'ws'
 
 import * as legacy from './lib/legacy-ca.mts'
-import { PHONE_AUDITED_OPS, PHONE_COWORK_OPS } from '../src/shared/remoteProtocol.ts'
+import { PHONE_AUDITED_OPS, PHONE_CANVAS_OPS } from '../src/shared/remoteProtocol.ts'
 import { coreCall as rc, exe } from './lib/core-call.mts'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-remote-e2e-'))
-assert.deepEqual([...rc('phoneCoworkOps')].sort(), [...PHONE_COWORK_OPS].sort(), 'the phone allowlist matches what the phone page expects')
+assert.deepEqual([...rc('phoneCanvasOps')].sort(), [...PHONE_CANVAS_OPS].sort(), 'the phone allowlist matches what the phone page expects')
 assert.deepEqual([...rc('phoneAuditedOps')].sort(), [...PHONE_AUDITED_OPS].sort())
 
 // ── certificates ──
@@ -528,16 +528,20 @@ try {
   assert.equal(g.branch, 'main')
   assert.ok(g.files.some((f: any) => f.path === 'README.md' && f.index === '?' && f.workingDir === '?'))
 
-  // Cowork: an allowlist, and an audit line with no free text
-  phone.send({ t: 'cowork', reqId: 1, windowId: 2, op: 'editBoard', args: [] })
-  assert.equal((await phone.take((m) => m.t === 'cowork' && m.reqId === 1, 'blocked op')).result.code, 'not-allowed')
-  phone.send({ t: 'cowork', reqId: 2, windowId: 2, op: 'capabilities', args: [] })
-  assert.equal((await phone.take((m) => m.t === 'cowork' && m.reqId === 2, 'allowed op', 60000)).result.ok, true)
-  phone.send({ t: 'cowork', reqId: 3, windowId: 99, op: 'list', args: [] })
-  assert.equal((await phone.take((m) => m.t === 'cowork' && m.reqId === 3, 'no workspace')).result.code, 'no-workspace')
-  phone.send({ t: 'cowork', reqId: 4, windowId: 2, op: 'delete', args: ['no-such-run'] })
-  assert.equal((await phone.take((m) => m.t === 'cowork' && m.reqId === 4, 'audited op')).result.ok, false)
-  assert.match(auditLog(), /"event":"cowork\.delete"/)
+  // Cowork canvas: a small allowlist (§3.9), refusals audited too, and audit lines with no free text
+  phone.send({ t: 'canvas', reqId: 1, windowId: 2, op: 'node.create', req: { channelId: 'x', agent: 'claude' } })
+  assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 1, 'desktop-only op')).result.code, 'not-allowed')
+  assert.match(auditLog(), /"event":"canvas\.node\.create"/)
+  phone.send({ t: 'canvas', reqId: 2, windowId: 2, op: 'channels.list', req: null })
+  assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 2, 'allowed op', 60000)).result.ok, true)
+  phone.send({ t: 'canvas', reqId: 3, windowId: 99, op: 'channels.list', req: null })
+  assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 3, 'no workspace')).result.code, 'no-workspace')
+  phone.send({ t: 'canvas', reqId: 4, windowId: 2, op: 'node.message', req: { channelId: 'nope', nodeId: 'n', sessionGeneration: 'g', text: 'secret-text-123' } })
+  assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 4, 'audited op')).result.ok, false)
+  assert.match(auditLog(), /"event":"canvas\.node\.message"/)
+  assert.doesNotMatch(auditLog(), /secret-text-123/, 'message text never reaches the audit log')
+  phone.send({ t: 'canvas', reqId: 5, windowId: 2, op: 'stop.killAll', req: null })
+  assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 5, 'stage 2 is desktop-only')).result.code, 'not-allowed')
 
   // Opening a folder only from the desktop's own recent list
   phone.send({ t: 'openWorkspace', path: outside })
@@ -584,7 +588,7 @@ try {
   assert.equal(await phone.closedWith(), 4001)
   assert.equal((await api(hp)).status, 403, 'revoked device cannot reuse a preview URL')
   assert.equal((await api('/api/vapid', { headers: authBearer })).status, 401)
-  console.log('sessions, files, cowork gate, audit and revocation ok')
+  console.log('sessions, files, canvas gate, audit and revocation ok')
 
   // Stop and start: same CA, so a phone stays trusted
   const fp = st.caFingerprint
