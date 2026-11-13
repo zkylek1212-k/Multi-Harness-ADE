@@ -5603,6 +5603,7 @@ dependencies = [
 name = "wb-hook"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "tokio",
 ]
 

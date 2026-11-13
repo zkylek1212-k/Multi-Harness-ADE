@@ -23,8 +23,14 @@ enum Decision {
     Pass,
 }
 
+mod mcp;
+
 fn main() {
     let cli = std::env::args().nth(1).unwrap_or_default();
+    if cli == "mcp" {
+        mcp::run();
+        return;
+    }
     let mut input = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut input);
     let decision = ask(&cli, &input).unwrap_or(Decision::Pass);

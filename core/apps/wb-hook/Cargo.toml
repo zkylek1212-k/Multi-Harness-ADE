@@ -1,12 +1,13 @@
 [package]
 name = "wb-hook"
-description = "The permission hook all three CLIs run: hands the request to the app over a named pipe and prints the answer in that CLI's format. Std only, so it starts fast."
+description = "The permission hook all three CLIs run, and the team MCP server (`wb-hook mcp`): both hand the request to the app over a named pipe. Std plus serde_json only, so it starts fast."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }

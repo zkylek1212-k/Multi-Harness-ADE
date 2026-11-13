@@ -15,6 +15,9 @@ use crate::pty::PtyEvent;
 use crate::util::{js_prefix, now_ms, p, read_json_with_fallback, real_path, uuid, write_json_atomic};
 use crate::worktree::{self as wt, NodeWorktree};
 
+mod team;
+pub use team::{mcp_call, mcp_request, tool_names};
+
 pub const UPDATE_EVENT: &str = "canvas:update";
 const MAX_EVENTS: usize = 500;
 const MAX_TEXT: usize = 16 * 1024;
@@ -103,6 +106,12 @@ struct Channel {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     events: Vec<Value>,
+    /// Teams of nodes working together (cowork-team-implement.md); missing in files from before teams
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    teams: Vec<team::Team>,
+    /// What each node is working on, for the Feed cards; keyed by node id
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    tasks: std::collections::BTreeMap<String, team::NodeTask>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -132,6 +141,7 @@ fn channel_ok(c: &Channel) -> bool {
         && c.nodes.iter().all(|n| valid_id(&n.id) && !n.agent.is_empty() && n.agent.len() <= 128 && pos_ok(n.position) && size_ok(n.size))
         && c.edges.iter().all(|e| valid_id(&e.id) && ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()) && e.text.len() <= MAX_TEXT)
         && c.events.len() <= MAX_EVENTS
+        && team::teams_ok(c)
 }
 
 // ---------- runtime ----------
@@ -178,6 +188,12 @@ struct RepoState {
     stop: Option<f64>,
     merges: HashMap<String, (String, String, wt::MergeToken)>,
     discards: HashMap<String, (String, String, wt::DiscardToken)>,
+    /// Team messages per channel, saved next to the channel file
+    msgs: HashMap<String, Vec<team::Msg>>,
+    /// channel/node -> (last notice, notices for the same unread mail)
+    nudged: HashMap<String, (f64, u8)>,
+    /// A lead's merge requests waiting for the user
+    merge_reqs: HashMap<String, team::MergeReq>,
 }
 
 struct Repo {
@@ -221,6 +237,7 @@ impl Repo {
         let Ok(rd) = std::fs::read_dir(self.dir()) else { return };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
+            // "<id>.messages.json" and "<id>.prev.json" are not channels: the id check rejects the dot
             let Some(id) = name.strip_suffix(".json").filter(|i| valid_id(i)) else { continue };
             let ok = |v: &Value| serde_json::from_value::<Channel>(v.clone()).map(|c| c.id == id && channel_ok(&c)).unwrap_or(false);
             // Unknown schema or damage on both copies: left on disk untouched, not shown
@@ -229,6 +246,11 @@ impl Repo {
                     st.channels.insert(c.id.clone(), c);
                 }
             }
+        }
+        let ids: Vec<String> = st.channels.keys().cloned().collect();
+        for id in ids {
+            let m = team::load_messages(self, &id);
+            st.msgs.insert(id, m);
         }
         // No process survives an app restart: every node starts as ended, and a lost worktree shows as an error
         for c in st.channels.values() {
@@ -300,7 +322,9 @@ fn view(core: &Core, st: &RepoState, channel: &str) -> Option<Value> {
             runtime.insert(n.id.clone(), rt_view(core, rt, st.stop.is_some()));
         }
     }
-    Some(json!({ "channel": c, "runtime": runtime, "stop": stop_view(st) }))
+    let mut v = json!({ "channel": c, "runtime": runtime, "stop": stop_view(st) });
+    team::view_extra(st, c, &mut v);
+    Some(v)
 }
 
 fn stop_view(st: &RepoState) -> Value {
@@ -441,11 +465,15 @@ pub fn start(core: &Arc<Core>) {
         std::thread::spawn(move || match ev {
             PtyEvent::Approval(id) => on_screen_approval(&core, &id),
             PtyEvent::Exit { id, code, .. } => on_exit(&core, &id, code),
-            PtyEvent::Activity(id, _) => {
+            PtyEvent::Activity(id, busy) => {
                 let owned = app(&core).ok().and_then(|a| a.ptys.lock().unwrap().get(&id).cloned());
                 if let Some((repo, channel, _)) = owned {
                     recheck_screen_approvals(&core);
                     emit(&core, &repo, &channel);
+                    // A CLI that just went idle may have team mail waiting
+                    if !busy {
+                        team::deliver(&core, &repo, &channel);
+                    }
                 }
             }
             PtyEvent::Changed => recheck_screen_approvals(&core),
@@ -604,7 +632,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 if st.channels.len() >= MAX_CHANNELS {
                     return Err(err("invalid", "Too many channels"));
                 }
-                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], edges: vec![], events: vec![] };
+                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
                 repo.save(&c)?;
                 st.channels.insert(id.clone(), c);
             }
@@ -955,6 +983,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let list = wt::legacy_inventory(&repo.root, &core.data_dir.join("cowork"), &raw).map_err(git_err)?;
             Ok(serde_json::to_value(list).unwrap())
         }
+        op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") => team::dispatch(core, &repo, op, req, origin),
         _ => Err(err("invalid", format!("Unknown canvas operation: {}", js_prefix(op, 40)))),
     }
 }
@@ -967,6 +996,7 @@ fn remove_node(core: &Core, repo: &Arc<Repo>, ch: &str, nd: &str, event: Option<
         c.nodes.retain(|n| n.id != nd);
         // The handoff text stays in the event history after its edge goes
         c.edges.retain(|e| e.from != nd && e.to != nd);
+        team::forget_node(c, nd);
         if let Some(t) = event {
             push_event(c, json!({ "t": t, "at": now_ms(), "node": nd }));
         }
@@ -1084,6 +1114,8 @@ fn stop(core: &Arc<Core>, repo: &Arc<Repo>) -> R<Value> {
             }
             if first {
                 push_event(c, json!({ "t": "stop-requested", "at": now_ms() }));
+                // Teams stay paused after the stop is cleared; the user resumes each one
+                team::pause_all(c, "stopped");
             }
             let _ = repo.save(c);
         }
@@ -1252,7 +1284,7 @@ mod tests {
     #[test]
     fn channel_validation_rejects_bad_ids_and_dangling_edges() {
         let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], edges: vec![], events: vec![] };
+        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
         assert!(channel_ok(&c));
         c.edges.push(Edge { id: "e".into(), from: "a".into(), to: "zz".into(), at: 0.0, text: String::new() });
         assert!(!channel_ok(&c), "edge to a missing node");

@@ -74,7 +74,17 @@ fn plain_path(path: &Path) -> Option<String> {
 
 static PIPE: OnceLock<Option<String>> = OnceLock::new();
 
-/// The hook for one new canvas session, or nothing (the CLI then asks in its own terminal, layer 1)
+/// Team tools (the `workbench` MCP server) per CLI; on by default for all three (cowork-team-implement.md §4.5).
+/// Independent of Bypass: a team needs its channel whether or not the CLI asks before editing.
+pub fn mcp_enabled(core: &Core, agent: &str) -> bool {
+    core.load_settings().pointer(&format!("/cowork/teamMcp/{agent}")).and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// The MCP server's name in every CLI: Claude's tools become mcp__workbench__*, agy's rule mcp(workbench/*)
+const MCP_NAME: &str = "workbench";
+
+/// What one new canvas session gets: the approval hook (Phase 6) and the team MCP server, or neither.
+/// Without them the CLI asks in its own terminal (layer 1) and the node has no team tools.
 pub fn mount(core: &Arc<Core>, agent: &str) -> Mount {
     let cli = match agent {
         "claude" => "claude",
@@ -82,37 +92,57 @@ pub fn mount(core: &Arc<Core>, agent: &str) -> Mount {
         "antigravity" => "agy",
         _ => return Mount::none(),
     };
+    if cli == "agy" {
+        let _ = sync_agy(core);
+    }
     // With permissions bypassed the CLI never asks, so there is nothing to hook
-    if core.is_cli_bypass() || !enabled(core, agent) {
-        if cli == "agy" {
-            let _ = sync_agy(core);
-        }
+    let hook = !core.is_cli_bypass() && enabled(core, agent);
+    let mcp = mcp_enabled(core, agent);
+    if !hook && !mcp {
         return Mount::none();
     }
     let Some(exe) = hook_exe() else { return Mount::none() };
     let Some(pipe) = PIPE.get_or_init(|| start_server(core)).clone() else { return Mount::none() };
     let token = uuid();
-    let args = match cli {
+    let mut args: Vec<String> = Vec::new();
+    match cli {
         "claude" => {
-            let file = core.data_dir.join("canvas").join("claude-hooks.json");
-            let settings = json!({ "hooks": { "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("\"{}\" claude", p(&exe)), "timeout": HOOK_TIMEOUT_S }] }] } });
-            if std::fs::create_dir_all(file.parent().unwrap()).is_err() || write_json_atomic(&file, &settings).is_err() {
-                return Mount::none();
+            let dir = core.data_dir.join("canvas");
+            let _ = std::fs::create_dir_all(&dir);
+            if hook {
+                let file = dir.join("claude-hooks.json");
+                let settings = json!({ "hooks": { "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("\"{}\" claude", p(&exe)), "timeout": HOOK_TIMEOUT_S }] }] } });
+                if write_json_atomic(&file, &settings).is_ok() {
+                    args.extend(["--settings".to_string(), plain_path(&file).unwrap_or_else(|| p(&file))]);
+                }
             }
-            vec!["--settings".to_string(), p(&file)]
+            if mcp {
+                // Claude starts the server itself, with no shell in between: the path may have spaces
+                let file = dir.join("claude-mcp.json");
+                let config = json!({ "mcpServers": { MCP_NAME: { "command": p(&exe), "args": ["mcp"] } } });
+                if write_json_atomic(&file, &config).is_ok() {
+                    args.extend(["--mcp-config".to_string(), plain_path(&file).unwrap_or_else(|| p(&file)), "--allowedTools".to_string(), format!("mcp__{MCP_NAME}__*")]);
+                }
+            }
         }
         "codex" => {
-            // Codex trusts a hook by the hash of exactly this text: it must never change between launches
-            let Some(cmd) = plain_path(&exe) else { return Mount::none() };
-            vec!["-c".into(), format!("hooks.PermissionRequest=[{{matcher='.*',hooks=[{{type='command',command='{cmd} codex',timeout={HOOK_TIMEOUT_S}}}]}}]")]
-        }
-        _ => {
-            if sync_agy(core).is_err() {
-                return Mount::none();
+            // codex.cmd runs through cmd /c call: no double quotes in any value, so TOML single-quoted strings only
+            if let Some(cmd) = plain_path(&exe) {
+                if hook {
+                    // Codex trusts a hook by the hash of exactly this text: it must never change between launches
+                    args.extend(["-c".into(), format!("hooks.PermissionRequest=[{{matcher='.*',hooks=[{{type='command',command='{cmd} codex',timeout={HOOK_TIMEOUT_S}}}]}}]")]);
+                }
+                if mcp {
+                    // Codex hands MCP servers only the variables listed in env_vars (Phase 0)
+                    for kv in [format!("mcp_servers.{MCP_NAME}.command='{cmd}'"), format!("mcp_servers.{MCP_NAME}.args=['mcp']"), format!("mcp_servers.{MCP_NAME}.env_vars=['WB_HOOK_PIPE','WB_HOOK_TOKEN']"), format!("mcp_servers.{MCP_NAME}.default_tools_approval_mode='approve'")] {
+                        args.extend(["-c".to_string(), kv]);
+                    }
+                }
             }
-            vec![]
         }
-    };
+        // agy: both are user-level entries kept by sync_agy; the session only needs the environment
+        _ => {}
+    }
     let env = vec![("WB_HOOK_PIPE".into(), pipe), ("WB_HOOK_TOKEN".into(), token.clone()), ("WB_HOOK_TIMEOUT_MS".into(), "590000".into())];
     Mount { args, env, token: Some(token) }
 }
@@ -121,35 +151,104 @@ fn agy_hooks_file() -> PathBuf {
     home().join(".gemini").join("config").join("hooks.json")
 }
 
-/// Adds or removes only our named entry in agy's user hooks.json, keeping everything else the user has
-pub fn sync_agy(core: &Core) -> Result<(), String> {
-    let want = enabled(core, "antigravity") && !core.is_cli_bypass();
-    let file = agy_hooks_file();
-    let text = read_text(&file);
-    if text.is_none() && !want {
-        return Ok(());
+fn agy_mcp_file() -> PathBuf {
+    home().join(".gemini").join("config").join("mcp_config.json")
+}
+
+fn agy_settings_file() -> PathBuf {
+    home().join(".gemini").join("antigravity-cli").join("settings.json")
+}
+
+/// Reads a user JSON file for an in-place edit; a file that is not a JSON object is never touched
+fn read_obj(file: &Path, create: bool) -> Result<Option<Value>, String> {
+    match read_text(file) {
+        None if !create => Ok(None),
+        Some(t) if !t.trim().is_empty() => {
+            let v: Value = serde_json::from_str(&t).map_err(|_| format!("{} is not valid JSON; left untouched", p(file)))?;
+            if v.is_object() {
+                Ok(Some(v))
+            } else {
+                Err(format!("{} is not an object; left untouched", p(file)))
+            }
+        }
+        _ => Ok(Some(json!({}))),
     }
-    let mut v: Value = match &text {
-        Some(t) if !t.trim().is_empty() => serde_json::from_str(t).map_err(|_| "agy hooks.json is not valid JSON; left untouched".to_string())?,
-        _ => json!({}),
-    };
-    let obj = v.as_object_mut().ok_or("agy hooks.json is not an object; left untouched")?;
-    // agy runs the command through cmd with Go-style \" escapes, which cmd takes literally: the command must need no
-    // quotes, like Codex's. Its stderr ("not recognized", CP950) then broke agy's protobuf (live test 2026-11-13).
-    let entry = hook_exe().and_then(|exe| plain_path(&exe)).map(|cmd| json!({ "PreToolUse": [{ "matcher": "write_file|edit_file", "hooks": [{ "type": "command", "command": format!("{cmd} agy"), "timeout": HOOK_TIMEOUT_S }] }] }));
-    let changed = match (want, entry) {
-        (true, Some(e)) if obj.get(AGY_ENTRY) == Some(&e) => false,
-        (true, Some(e)) => {
-            obj.insert(AGY_ENTRY.into(), e);
+}
+
+fn write_obj(file: &Path, v: &Value) -> Result<(), String> {
+    if let Some(d) = file.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    write_json_atomic(file, v)
+}
+
+/// agy's setup lives in its user files, so this adds or removes only our own named pieces and keeps the rest:
+/// the approval hook in hooks.json, the `workbench` server in mcp_config.json and its `mcp(workbench/*)` allow
+/// rule in settings.json. agy's `--settings` cannot carry MCP servers (Phase 0), and a session `permissions` would
+/// replace the user's own allow list for that session, so the rule is user-level too. Outside the app the server
+/// offers no tools, so the rule allows nothing there.
+pub fn sync_agy(core: &Core) -> Result<(), String> {
+    // agy runs hook commands through cmd with Go-style \" escapes, which cmd takes literally: the command must need
+    // no quotes, like Codex's. Its stderr ("not recognized", CP950) then broke agy's protobuf (live test 2026-11-13).
+    let plain = hook_exe().and_then(|exe| plain_path(&exe));
+    let want_hook = enabled(core, "antigravity") && !core.is_cli_bypass();
+    let want_mcp = mcp_enabled(core, "antigravity");
+
+    let file = agy_hooks_file();
+    if let Some(mut v) = read_obj(&file, want_hook)? {
+        let obj = v.as_object_mut().unwrap();
+        let entry = plain.as_ref().map(|cmd| json!({ "PreToolUse": [{ "matcher": "write_file|edit_file", "hooks": [{ "type": "command", "command": format!("{cmd} agy"), "timeout": HOOK_TIMEOUT_S }] }] }));
+        let changed = match (want_hook, entry) {
+            (true, Some(e)) if obj.get(AGY_ENTRY) == Some(&e) => false,
+            (true, Some(e)) => {
+                obj.insert(AGY_ENTRY.into(), e);
+                true
+            }
+            _ => obj.shift_remove(AGY_ENTRY).is_some(),
+        };
+        if changed {
+            write_obj(&file, &v)?;
+        }
+    }
+
+    let file = agy_mcp_file();
+    if let Some(mut v) = read_obj(&file, want_mcp)? {
+        let servers = v.as_object_mut().unwrap().entry("mcpServers").or_insert_with(|| json!({}));
+        let Some(servers) = servers.as_object_mut() else { return Err("agy mcpServers is not an object; left untouched".into()) };
+        let entry = plain.as_ref().map(|cmd| json!({ "command": cmd, "args": ["mcp"] }));
+        let changed = match (want_mcp, entry) {
+            (true, Some(e)) if servers.get(MCP_NAME) == Some(&e) => false,
+            (true, Some(e)) => {
+                servers.insert(MCP_NAME.into(), e);
+                true
+            }
+            _ => servers.shift_remove(MCP_NAME).is_some(),
+        };
+        if changed {
+            write_obj(&file, &v)?;
+        }
+    }
+
+    let file = agy_settings_file();
+    let rule = format!("mcp({MCP_NAME}/*)");
+    if let Some(mut v) = read_obj(&file, want_mcp)? {
+        let perms = v.as_object_mut().unwrap().entry("permissions").or_insert_with(|| json!({}));
+        let Some(perms) = perms.as_object_mut() else { return Ok(()) };
+        let allow = perms.entry("allow").or_insert_with(|| json!([]));
+        let Some(allow) = allow.as_array_mut() else { return Ok(()) };
+        let has = allow.iter().any(|x| x.as_str() == Some(rule.as_str()));
+        let changed = if want_mcp && plain.is_some() && !has {
+            allow.push(json!(rule));
             true
+        } else if (!want_mcp || plain.is_none()) && has {
+            allow.retain(|x| x.as_str() != Some(rule.as_str()));
+            true
+        } else {
+            false
+        };
+        if changed {
+            write_obj(&file, &v)?;
         }
-        _ => obj.shift_remove(AGY_ENTRY).is_some(),
-    };
-    if changed {
-        if let Some(d) = file.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-        }
-        write_json_atomic(&file, &v)?;
     }
     Ok(())
 }
@@ -210,6 +309,22 @@ async fn handle(mut conn: tokio::net::windows::named_pipe::NamedPipeServer, core
         let mut head = String::new();
         tokio::time::timeout(Duration::from_secs(10), r.read_line(&mut head)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
         let parts: Vec<&str> = head.trim_end().split(' ').collect();
+        // `WBMCP1 <token> <len>`: a team tool request from `wb-hook mcp`; the reply is `<len>\n<json>`
+        if let (Some(&"WBMCP1"), Some(token), Some(len)) = (parts.first(), parts.get(1), parts.get(2).and_then(|l| l.parse::<usize>().ok())) {
+            if len > MAX_INPUT {
+                return Ok(());
+            }
+            let mut body = vec![0; len];
+            tokio::time::timeout(Duration::from_secs(10), r.read_exact(&mut body)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
+            let (token, req) = (token.to_string(), serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null));
+            drop(r);
+            let Some(core) = core.upgrade() else { return Ok(()) };
+            let out = tokio::task::spawn_blocking(move || crate::canvas::mcp_request(&core, &token, &req)).await.unwrap_or(json!({ "ok": false, "text": "internal error" }));
+            let bytes = serde_json::to_vec(&out).unwrap_or_default();
+            conn.write_all(format!("{}\n", bytes.len()).as_bytes()).await?;
+            conn.write_all(&bytes).await?;
+            return conn.flush().await;
+        }
         let (Some(&"WBHOOK1"), Some(token), Some(cli), Some(len)) = (parts.first(), parts.get(1), parts.get(2), parts.get(3).and_then(|l| l.parse::<usize>().ok())) else {
             return conn.write_all(b"pass\n").await;
         };

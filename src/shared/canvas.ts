@@ -13,6 +13,63 @@ export interface Channel {
   edges: HandoffEdge[]
   /** Newest last, truncated by the backend; Feed and phone read this */
   events: ChannelEvent[]
+  /** Teams (cowork-team-implement.md §2); absent in files from before teams */
+  teams?: Team[]
+  /** What each node works on, keyed by node id; set by assign_task, report or the user */
+  tasks?: Record<string, NodeTask>
+}
+
+export type RelayMode = 'approve' | 'lead-auto' | 'auto'
+
+export interface Team {
+  id: string
+  name: string
+  goal: string
+  /** One of memberIds */
+  leadId: string
+  /** Includes the lead; a node is in at most one team */
+  memberIds: string[]
+  /** approve: every agent message waits for the user; lead-auto: only members' do; auto: none do, and the lead merges members into its own worktree itself */
+  relay: RelayMode
+  status: 'draft' | 'running' | 'paused' | 'done' | 'failed'
+  /** Why it stopped running: the user, the stop, or a cap (only in lead-auto and auto) */
+  pausedReason?: string
+  bounds: { x: number; y: number; width: number; height: number }
+  limits: { maxMessages: number; perMemberPer10Min: number }
+  startedAt?: number
+  messageCount: number
+}
+
+export interface NodeTask {
+  title: string
+  status: 'idle' | 'working' | 'blocked' | 'done' | 'failed'
+  summary?: string
+  updatedAt: number
+  source: 'assign' | 'report' | 'user'
+}
+
+export interface TeamMessage {
+  id: string
+  teamId: string
+  /** A node id, or 'app' / 'user' */
+  from: string
+  to: string
+  kind: 'task' | 'message' | 'report' | 'system'
+  /** Untrusted when from an agent; never shown as HTML */
+  text: string
+  at: number
+  state: 'pending-approval' | 'queued' | 'notified' | 'read' | 'rejected'
+}
+
+/** A lead's request to merge a member's branch into its own worktree, waiting for the user */
+export interface TeamMergeRequest {
+  id: string
+  team: string
+  lead: string
+  member: string
+  /** `<short sha> <subject>` */
+  commits: string[]
+  at: number
 }
 
 export interface CanvasNode {
@@ -40,6 +97,14 @@ export type ChannelEvent =
   | { t: 'handoff'; at: number; edge: string; from: string; to: string; text: string }
   | { t: 'merged' | 'discarded'; at: number; node: string }
   | { t: 'stop-requested' | 'stop-cleared'; at: number }
+  | { t: 'team-started' | 'team-resumed'; at: number; team: string }
+  | { t: 'team-paused'; at: number; team: string; reason: string }
+  | { t: 'team-done'; at: number; team: string; by: 'lead' | 'user' }
+  /** Who, to whom and how long; the text lives in the messages file only */
+  | { t: 'message'; at: number; team: string; id: string; from: string; to: string; kind: TeamMessage['kind']; len: number; held: boolean }
+  | { t: 'relay'; at: number; id: string; decision: 'approved' | 'rejected'; via?: 'phone' }
+  | { t: 'task'; at: number; node: string; status: NodeTask['status']; team?: string }
+  | { t: 'team-merge'; at: number; team: string; member: string; decision: 'requested' | 'approved' | 'rejected' | 'auto'; id?: string }
 
 // ---------- runtime (backend-owned, not persisted) ----------
 
@@ -99,8 +164,22 @@ export interface StopState {
 
 export interface ChannelView {
   channel: Channel
-  runtime: Record<string, NodeRuntime>
+  runtime: Record<string, NodeRuntime & NodeTeamRuntime>
   stop: StopState
+  teams: Team[]
+  /** Agent messages waiting for the user (relay cards) */
+  relays: TeamMessage[]
+  mergeRequests: TeamMergeRequest[]
+  /** The channel's latest team messages, newest first, at most 100 */
+  messages: TeamMessage[]
+}
+
+export interface NodeTeamRuntime {
+  teamId?: string
+  role?: 'lead' | 'member'
+  task?: NodeTask | null
+  /** Team messages queued or notified but not read yet */
+  unread: number
 }
 
 export interface ChannelSummary {
@@ -200,6 +279,22 @@ export interface CanvasOps {
   'stop.killAll': { req: void; res: { failed: { channelId: string; nodeId: string; error: string }[] } }
   'stop.clear': { req: void; res: StopState }
   'legacy.inventory': { req: void; res: LegacyWorktree[] }
+  // ---------- teams (cowork-team-implement.md) ----------
+  'team.create': { req: { channelId: string; name: string; goal: string; leadId: string; memberIds: string[]; relay: RelayMode; bounds: Team['bounds'] }; res: Team }
+  /** Members, lead and goal only while not running; name, relay, limits and bounds any time */
+  'team.update': { req: { channelId: string; teamId: string; name?: string; goal?: string; leadId?: string; memberIds?: string[]; relay?: RelayMode; limits?: Team['limits']; bounds?: Team['bounds'] }; res: void }
+  'team.delete': { req: { channelId: string; teamId: string }; res: void }
+  /** Sends the kickoff to the lead the first time (or after done); refused while stopped */
+  'team.start': { req: { channelId: string; teamId: string }; res: void }
+  'team.resume': { req: { channelId: string; teamId: string }; res: void }
+  'team.pause': { req: { channelId: string; teamId: string }; res: void }
+  'team.finish': { req: { channelId: string; teamId: string }; res: void }
+  /** Newest first, at most 200; teamId empty = the whole channel */
+  'team.messages': { req: { channelId: string; teamId: string }; res: TeamMessage[] }
+  'relay.approve': { req: { channelId: string; messageId: string }; res: void }
+  'relay.reject': { req: { channelId: string; messageId: string }; res: void }
+  'teammerge.approve': { req: { channelId: string; requestId: string }; res: void }
+  'teammerge.reject': { req: { channelId: string; requestId: string }; res: void }
 }
 
 export type CanvasOp = keyof CanvasOps
@@ -227,3 +322,7 @@ export type CanvasErrorCode =
   | 'root-node-exists'
   | 'not-owned'
   | 'unknown-schema'
+  /** A team tool or relay refused because the team is not running (paused by the user, the stop or a cap) */
+  | 'paused'
+  /** Not for this caller: the phone, a member using a lead tool, or a route the team does not allow */
+  | 'not-allowed'
