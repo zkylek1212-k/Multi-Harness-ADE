@@ -318,7 +318,10 @@ fn clean(dir: &Path) -> Result<()> {
     idle(dir)?;
     // These index flags can hide modified tracked files from git status.
     if !hidden_paths(dir)?.is_empty() { return Err("hidden index flags require review".into()); }
-    if g::has_changes(dir)? { return Err("dirty".into()); }
+    // The app's own untracked workspace state (.workbench/settings.json, credentials.enc) is not the user's work.
+    // A tracked, modified .workbench file still counts, and git merge itself refuses to overwrite untracked files.
+    let status = g::git(dir, &["status", "--porcelain", "--untracked-files=all"])?;
+    if status.lines().any(|l| !l.trim().is_empty() && !l.starts_with("?? .workbench/")) { return Err("dirty".into()); }
     Ok(())
 }
 
@@ -882,6 +885,24 @@ mod tests {
         g::git(&r.repo, &["checkout", "-q", "main"]).unwrap();
         fs::write(Path::new(&node.path).join("new.txt"), "dirty").unwrap();
         assert!(merge(&r.repo, &token).unwrap_err().contains("dirty"));
+    }
+
+    #[test]
+    fn app_workspace_state_does_not_block_a_merge() {
+        // Opening the repo in the app writes an untracked .workbench/; found by the live Cowork test (2026-11-13)
+        let r = Repo::new();
+        let node = r.node();
+        r.commit(&node, "new.txt", "node\n");
+        fs::create_dir_all(r.repo.join(".workbench")).unwrap();
+        fs::write(r.repo.join(".workbench").join("settings.json"), "{}").unwrap();
+        let token = merge_preview(&r.repo, &node, "main").unwrap();
+        merge(&r.repo, &token).unwrap();
+        assert_eq!(fs::read_to_string(r.repo.join("new.txt")).unwrap(), "node\n");
+        assert!(r.repo.join(".workbench").join("settings.json").exists());
+        // Anything else untracked still stops it
+        r.commit(&node, "more.txt", "x\n");
+        fs::write(r.repo.join("mine.txt"), "user work").unwrap();
+        assert!(merge_preview(&r.repo, &node, "main").and_then(|t| merge(&r.repo, &t).map(|_| ())).unwrap_err().contains("dirty"));
     }
 
     #[test]
