@@ -406,6 +406,8 @@ export interface CoworkSettings {
   worktreeRoot?: string
   /** 第二層審批：Claude 只影響該 session，預設開；Codex 需在 Codex 內信任一次、agy 會寫 ~/.gemini/config/hooks.json，預設關 */
   structuredApproval?: { claude?: boolean; codex?: boolean; antigravity?: boolean }
+  /** 團隊協作工具（workbench MCP server），三家預設開；agy 會寫 ~/.gemini 的 mcp_config.json 與一條 allow 規則 */
+  teamMcp?: { claude?: boolean; codex?: boolean; antigravity?: boolean }
 }
 
 export interface UpdateInfo {

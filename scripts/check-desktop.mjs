@@ -152,6 +152,31 @@ try {
     assert.ok((await p.eval(`window.__canvasCalls`)) < 5, `canvas calls in 2 s: ${await p.eval(`window.__canvasCalls`)}`)
     assert.equal(await Promise.race([p.eval(`window.api.settings.get().then(() => 'ok')`), sleep(5000).then(() => 'stuck')]), 'ok')
   })
+  await check('Cowork team: frame, routes, Feed cards and the team panel', async () => {
+    const call = (op, req) => p.eval(`window.api.canvas.call(${JSON.stringify(op)}, ${JSON.stringify(req ?? null)})`)
+    // A worktree needs a base commit; the workspace so far only has git init
+    for (const a of [['add', '-A'], ['-c', 'user.name=check', '-c', 'user.email=check@example.invalid', 'commit', '-qm', 'base']]) execFileSync('git', a, { cwd: ws, stdio: 'ignore' })
+    const ch = (await call('channels.list')).data[0].id
+    const node = async (x) => {
+      const r = await call('node.create', { channelId: ch, agent: 'cmd', workspace: 'worktree', position: { x, y: 0 }, size: { width: 400, height: 260 } })
+      assert.ok(r.ok, JSON.stringify(r))
+      return r.data.id
+    }
+    const a = await node(0)
+    const b = await node(440)
+    const team = (await call('team.create', { channelId: ch, name: 'Checkers', goal: 'g', leadId: a, memberIds: [a, b], relay: 'approve', bounds: { x: 0, y: 0, width: 1, height: 1 } })).data
+    assert.ok(team?.id, 'team created')
+    await p.eval(`document.querySelector('.react-flow__controls-fitview').click(), true`)
+    await p.waitFor(`document.querySelector('.cv-team .cv-team-name')?.textContent === 'Checkers'`)
+    await p.waitFor(`document.querySelectorAll('.react-flow__edge.cv-edge-team').length === 1`)
+    await p.eval(`document.querySelector('.cv-team-head').click(), true`)
+    await p.waitFor(`document.querySelector('.cv-right .cv-h')?.textContent.includes('Checkers') && document.querySelectorAll('.cv-right .segmented button').length === 3`)
+    await p.eval(`[...document.querySelectorAll('.cv-topbar .segmented button')].find((b) => b.textContent === 'Feed').click(), true`)
+    await p.waitFor(`document.querySelectorAll('.cv-feed-team .cv-card').length === 2`)
+    await call('stop')
+    await call('stop.killAll')
+    await call('stop.clear')
+  })
   await check('closing the window ends the app and its terminals', async () => {
     await p.eval(`window.api.pty.spawn({ command: 'cmd' })`)
     p.eval(`document.querySelector('#wb-window-controls button[data-act="close"]').click()`).catch(() => {})

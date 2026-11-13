@@ -12,9 +12,11 @@ const HOOK_AGENTS = [
 export function sanitizeCoworkSettings(v: unknown): Required<Settings> {
   const o = (v && typeof v === 'object' ? v : {}) as Settings
   const sa = o.structuredApproval || {}
+  const tm = o.teamMcp || {}
   return {
     worktreeRoot: typeof o.worktreeRoot === 'string' ? o.worktreeRoot : '',
-    structuredApproval: { claude: sa.claude ?? true, codex: sa.codex ?? false, antigravity: sa.antigravity ?? false }
+    structuredApproval: { claude: sa.claude ?? true, codex: sa.codex ?? false, antigravity: sa.antigravity ?? false },
+    teamMcp: { claude: tm.claude ?? true, codex: tm.codex ?? true, antigravity: tm.antigravity ?? true }
   }
 }
 
@@ -66,6 +68,27 @@ export default function CoworkSettings({ value, onChange, bypass }: { value: unk
           ))}
         </div>
         <p style={{ margin: '8px 4px 0', color: 'var(--fg-dim)', fontSize: 'var(--text-size-caption)', lineHeight: 1.5 }}>{t('settings.coworkHookNote')}</p>
+      </div>
+
+      <div className="macos-section">
+        <span className="macos-section-header">{t('settings.coworkTeamSection')}</span>
+        <div className="macos-inset-group">
+          {HOOK_AGENTS.map((a) => (
+            <div className="macos-row" key={a.id}>
+              <div className="macos-row-left">
+                <span className="macos-row-title">{a.name}</span>
+                {a.id === 'antigravity' && <span className="macos-row-sub">{t('settings.coworkTeamAgySub')}</span>}
+              </div>
+              <div className="macos-row-right">
+                <label className="apple-toggle">
+                  <input type="checkbox" checked={cw.teamMcp[a.id]} onChange={(e) => onChange({ ...cw, teamMcp: { ...cw.teamMcp, [a.id]: e.target.checked } })} />
+                  <span className="apple-toggle-slider" />
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p style={{ margin: '8px 4px 0', color: 'var(--fg-dim)', fontSize: 'var(--text-size-caption)', lineHeight: 1.5 }}>{t('settings.coworkTeamNote')}</p>
       </div>
     </div>
   )

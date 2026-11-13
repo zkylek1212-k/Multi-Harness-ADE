@@ -24,9 +24,11 @@ import type { CliLauncher } from '../../../../preload/index'
 import type { CanvasNode, ChannelEvent, ChannelSummary, ChannelView, CanvasOp, CanvasOps } from '../../../../shared/canvas'
 import TerminalNode, { type TerminalNodeData } from './TerminalNode'
 import Inspector, { type Selection } from './Inspector'
+import { TeamFeed, TeamFrame, type TeamFrameData } from './TeamPanels'
 
 const NODE_SIZE = { width: 640, height: 400 }
-const nodeTypes = { terminal: TerminalNode }
+const nodeTypes = { terminal: TerminalNode, team: TeamFrame }
+type CanvasNodeData = TerminalNodeData | TeamFrameData
 
 export type CanvasCall = <K extends CanvasOp>(op: K, req?: CanvasOps[K]['req']) => Promise<CanvasOps[K]['res'] | undefined>
 
@@ -78,7 +80,7 @@ function CanvasShell(): JSX.Element {
   const [mode, setMode] = useState<'canvas' | 'feed'>('canvas')
   const [inRoot, setInRoot] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [nodes, setNodes] = useState<Node<TerminalNodeData>[]>([])
+  const [nodes, setNodes] = useState<Node<CanvasNodeData>[]>([])
   const [zoom, setZoom] = useState(1)
   const [recentEdge, setRecentEdge] = useState<string | null>(null)
   const idRef = useRef(channelId)
@@ -169,8 +171,8 @@ function CanvasShell(): JSX.Element {
       setNodes([])
       return
     }
-    setNodes((prev) =>
-      view.channel.nodes.map((n) => {
+    setNodes((prev) => {
+      const terminals: Node<CanvasNodeData>[] = view.channel.nodes.map((n) => {
         const old = prev.find((p) => p.id === n.id)
         const keepPos = old && dragging.current.has(n.id)
         return {
@@ -183,12 +185,24 @@ function CanvasShell(): JSX.Element {
           data: { node: n, rt: view.runtime[n.id], channelId: view.channel.id, name: agentName(n.agent), mark: markOf(agents.find((a) => a.id === n.agent)?.cli || n.agent), zoom, stopped: view.stop.requested, call }
         }
       })
-    )
+      // A frame behind each team, sized from its members as drawn; it never moves on its own
+      const frames: Node<CanvasNodeData>[] = view.teams.flatMap((team) => {
+        const rects = terminals.filter((n) => team.memberIds.includes(n.id)).map((n) => ({ x: n.position.x, y: n.position.y, w: Number(n.style?.width), h: Number(n.style?.height) }))
+        if (rects.length === 0) return []
+        const x = Math.min(...rects.map((r) => r.x)) - 24
+        const y = Math.min(...rects.map((r) => r.y)) - 56
+        const w = Math.max(...rects.map((r) => r.x + r.w)) - x + 24
+        const h = Math.max(...rects.map((r) => r.y + r.h)) - y + 24
+        const pending = view.relays.filter((m) => m.teamId === team.id).length + view.mergeRequests.filter((m) => m.team === team.id).length
+        return [{ id: `team:${team.id}`, type: 'team', position: { x, y }, style: { width: w, height: h, pointerEvents: 'none' }, zIndex: -1, draggable: false, selectable: false, focusable: false, selected: selection?.kind === 'team' && selection.id === team.id, data: { team, pending, onPick: (id: string) => setSelection({ kind: 'team', id }) } }]
+      })
+      return [...frames, ...terminals]
+    })
   }, [view, selection, agentName, agents, zoom, call])
 
   const edges: Edge[] = useMemo(
-    () =>
-      (view?.channel.edges || []).map((e) => ({
+    () => [
+      ...(view?.channel.edges || []).map((e) => ({
         id: e.id,
         source: e.from,
         target: e.to,
@@ -197,10 +211,15 @@ function CanvasShell(): JSX.Element {
         selected: selection?.kind === 'edge' && selection.id === e.id,
         className: 'cv-edge'
       })),
+      // Lead to member: the routes the team's messages may take
+      ...(view?.teams || []).flatMap((team) =>
+        team.memberIds.filter((m) => m !== team.leadId).map((m) => ({ id: `team:${team.id}:${m}`, source: team.leadId, target: m, selectable: false, focusable: false, animated: team.status === 'running', className: 'cv-edge-team' }))
+      )
+    ],
     [view, recentEdge, selection, t]
   )
 
-  const onNodesChange = useCallback((changes: NodeChange<Node<TerminalNodeData>>[]) => {
+  const onNodesChange = useCallback((changes: NodeChange<Node<CanvasNodeData>>[]) => {
     for (const c of changes) {
       if (c.type === 'position') {
         if (c.dragging) dragging.current.add(c.id)
@@ -209,9 +228,10 @@ function CanvasShell(): JSX.Element {
     setNodes((ns) => applyNodeChanges(changes, ns))
   }, [])
 
-  const saveLayout = (n: Node<TerminalNodeData>): void => {
-    dragging.current.delete(n.id)
-    if (!view) return
+  const saveLayout = (node: Node<CanvasNodeData>): void => {
+    dragging.current.delete(node.id)
+    if (!view || node.type !== 'terminal') return
+    const n = node as Node<TerminalNodeData>
     const width = Math.round(Number(n.measured?.width ?? n.width ?? n.data.node.size.width))
     const height = Math.round(Number(n.measured?.height ?? n.height ?? n.data.node.size.height))
     void call('node.layout', { channelId: view.channel.id, nodeId: n.id, position: { x: Math.round(n.position.x), y: Math.round(n.position.y) }, size: { width, height } })
@@ -234,12 +254,21 @@ function CanvasShell(): JSX.Element {
     window.setTimeout(() => setRecentEdge((x) => (x === edge.id ? null : x)), 4000)
   }
 
+  const pickNode = (id: string): void => {
+    setSelection({ kind: 'node', id })
+    setMode('canvas')
+    const n = view?.channel.nodes.find((x) => x.id === id)
+    if (n) void flow.setCenter(n.position.x + n.size.width / 2, n.position.y + n.size.height / 2, { zoom: 1, duration: 300 })
+  }
+
   const nodeName = (id: string): string => {
     const n = view?.channel.nodes.find((x) => x.id === id)
     return n ? `${agentName(n.agent)} · ${n.id.slice(0, 4)}` : id.slice(0, 4)
   }
 
   const stop = view?.stop
+  // Everything that waits on the user in this channel: CLI approvals, held messages, merge requests
+  const pendingCount = view ? Object.values(view.runtime).filter((r) => r.approval).length + view.relays.length + view.mergeRequests.length : 0
   const createChannel = async (): Promise<void> => {
     const name = window.prompt(t('canvas.channelName'), '')
     if (!name?.trim()) return
@@ -262,6 +291,11 @@ function CanvasShell(): JSX.Element {
           <button className={mode === 'feed' ? 'on' : ''} onClick={() => setMode('feed')}>{t('canvas.feed')}</button>
         </div>
         <span className="cv-spacer" />
+        {pendingCount > 0 && (
+          <button className="cv-btn primary" onClick={() => setMode('feed')}>
+            {t('canvas.pending', { n: pendingCount })}
+          </button>
+        )}
         {error && <span className="cv-error" role="alert">{error}</span>}
         {stop?.requested ? (
           <>
@@ -346,8 +380,8 @@ function CanvasShell(): JSX.Element {
               onNodesChange={onNodesChange}
               onNodeDragStop={(_, n) => saveLayout(n)}
               onConnect={(c) => void onConnect(c)}
-              onNodeClick={(_, n) => setSelection({ kind: 'node', id: n.id })}
-              onEdgeClick={(_, e) => setSelection({ kind: 'edge', id: e.id })}
+              onNodeClick={(_, n) => n.type === 'terminal' && setSelection({ kind: 'node', id: n.id })}
+              onEdgeClick={(_, e) => !e.id.startsWith('team:') && setSelection({ kind: 'edge', id: e.id })}
               onPaneClick={() => setSelection(null)}
               onMove={(_, vp) => setZoom(vp.zoom)}
               // 離開可視範圍的節點卸下呈現（退訂畫面資料），回來時由快照接回；行程不受影響（§3.8）
@@ -362,26 +396,44 @@ function CanvasShell(): JSX.Element {
               <MiniMap pannable zoomable />
             </ReactFlow>
           ) : (
-            <FeedView events={view?.channel.events || []} nodeName={nodeName} onPick={(id) => {
-              setSelection({ kind: 'node', id })
-              setMode('canvas')
-              const n = view?.channel.nodes.find((x) => x.id === id)
-              if (n) void flow.setCenter(n.position.x + n.size.width / 2, n.position.y + n.size.height / 2, { zoom: 1, duration: 300 })
-            }} />
+            view && (
+              <TeamFeed
+                view={view}
+                call={call}
+                nodeName={nodeName}
+                onPick={pickNode}
+                timeline={<FeedView events={view.channel.events} nodeName={nodeName} teamName={(id) => view.teams.find((x) => x.id === id)?.name || id} onPick={pickNode} />}
+              />
+            )
           )}
           {view && view.channel.nodes.length === 0 && mode === 'canvas' && <div className="cv-empty">{t('canvas.empty')}</div>}
         </main>
 
-        <Inspector view={view} selection={selection} call={call} agentName={agentName} nodeName={nodeName} onSaveSize={saveLayout} />
+        <Inspector view={view} selection={selection} call={call} agentName={agentName} nodeName={nodeName} onPickTeam={(id) => setSelection({ kind: 'team', id })} />
       </div>
     </div>
   )
 }
 
-function FeedView({ events, nodeName, onPick }: { events: ChannelEvent[]; nodeName: (id: string) => string; onPick: (node: string) => void }): JSX.Element {
+function FeedView({ events, nodeName, teamName, onPick }: { events: ChannelEvent[]; nodeName: (id: string) => string; teamName: (id: string) => string; onPick: (node: string) => void }): JSX.Element {
   const { t } = useTranslation()
+  const who = (id: string): string => (id === 'app' ? 'Agent Workbench' : id === 'user' ? '—' : nodeName(id))
   const text = (e: ChannelEvent): string => {
     switch (e.t) {
+      case 'team-started':
+      case 'team-resumed':
+      case 'team-done':
+        return t(`canvas.ev_${e.t.replace('-', '_')}`, { team: teamName(e.team) })
+      case 'team-paused':
+        return t('canvas.ev_team_paused', { team: teamName(e.team), reason: e.reason })
+      case 'message':
+        return t(e.held ? 'canvas.ev_message_held' : 'canvas.ev_message', { from: who(e.from), to: who(e.to), kind: e.kind })
+      case 'task':
+        return t('canvas.ev_task', { node: nodeName(e.node), status: t(`canvas.task_${e.status}`) })
+      case 'team-merge':
+        return t('canvas.ev_team_merge', { member: nodeName(e.member), decision: e.decision })
+      case 'relay':
+        return t('canvas.ev_relay', { decision: e.decision })
       case 'node-started':
       case 'node-exited':
       case 'merged':

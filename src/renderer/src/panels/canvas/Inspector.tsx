@@ -4,36 +4,42 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from '@/i18n'
 import type { ChangedFile, ChangesSummary, ChannelView, DiscardPreview, LegacyWorktree, MergePreview } from '../../../../shared/canvas'
 import type { CanvasCall } from './CanvasView'
+import { NodeTeamSection, RelayCards, TeamInspector } from './TeamPanels'
 
-export type Selection = { kind: 'node' | 'edge'; id: string } | null
+export type Selection = { kind: 'node' | 'edge' | 'team'; id: string } | null
 
 export default function Inspector({
   view,
   selection,
   call,
   agentName,
-  nodeName
+  nodeName,
+  onPickTeam
 }: {
   view: ChannelView | null
   selection: Selection
   call: CanvasCall
   agentName: (id: string) => string
   nodeName: (id: string) => string
-  onSaveSize?: unknown
+  onPickTeam: (teamId: string) => void
 }): JSX.Element {
   const { t } = useTranslation()
   if (!view) return <aside className="cv-right" />
+  if (selection?.kind === 'team' && view.teams.some((x) => x.id === selection.id)) {
+    return <TeamInspector key={selection.id} view={view} teamId={selection.id} call={call} nodeName={nodeName} />
+  }
   if (selection?.kind === 'edge') {
     const e = view.channel.edges.find((x) => x.id === selection.id)
     if (e) return <EdgeInspector key={e.id} view={view} edgeId={e.id} call={call} nodeName={nodeName} />
   }
   if (selection?.kind === 'node') {
     const n = view.channel.nodes.find((x) => x.id === selection.id)
-    if (n) return <NodeInspector key={n.id} view={view} nodeId={n.id} call={call} agentName={agentName} />
+    if (n) return <NodeInspector key={n.id} view={view} nodeId={n.id} call={call} agentName={agentName} onPickTeam={onPickTeam} />
   }
   return (
     <aside className="cv-right">
       <p className="cv-muted">{t('canvas.selectHint')}</p>
+      <RelayCards view={view} call={call} nodeName={nodeName} />
       <LegacyInventory call={call} />
     </aside>
   )
@@ -105,7 +111,7 @@ function Files({ title, files }: { title: string; files: ChangedFile[] }): JSX.E
   )
 }
 
-function NodeInspector({ view, nodeId, call, agentName }: { view: ChannelView; nodeId: string; call: CanvasCall; agentName: (id: string) => string }): JSX.Element {
+function NodeInspector({ view, nodeId, call, agentName, onPickTeam }: { view: ChannelView; nodeId: string; call: CanvasCall; agentName: (id: string) => string; onPickTeam: (teamId: string) => void }): JSX.Element {
   const { t } = useTranslation()
   const n = view.channel.nodes.find((x) => x.id === nodeId)!
   const rt = view.runtime[nodeId]
@@ -170,6 +176,7 @@ function NodeInspector({ view, nodeId, call, agentName }: { view: ChannelView; n
           </>
         )}
       </dl>
+      <NodeTeamSection view={view} nodeId={nodeId} call={call} onPickTeam={onPickTeam} />
 
       {rt?.status === 'running' && (
         <section className="cv-sec">

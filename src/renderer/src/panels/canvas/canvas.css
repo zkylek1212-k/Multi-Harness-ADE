@@ -256,3 +256,39 @@
 /* React Flow 跟主題走 */
 .cv-center .react-flow { --xy-background-color: var(--bg); --xy-edge-stroke: var(--fg-dim); --xy-edge-label-background-color: var(--bg2); --xy-edge-label-color: var(--fg); --xy-controls-button-background-color: var(--bg2); --xy-controls-button-color: var(--fg); --xy-minimap-background-color: var(--bg2); }
 .cv-edge.selected path { stroke: var(--accent); }
+
+/* Teams (cowork-team-implement.md §3): a frame behind the members, cards in the Feed */
+.cv-team { width: 100%; height: 100%; border: 2px dashed var(--border-strong); border-radius: 14px; background: color-mix(in srgb, var(--accent) 5%, transparent); box-sizing: border-box; }
+.cv-team.st-running { border-color: var(--node-active); border-style: solid; }
+.cv-team.st-paused { border-color: var(--node-approval); }
+.cv-team-head { pointer-events: auto; display: flex; gap: 8px; align-items: center; margin: 8px 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--fg); font: inherit; cursor: pointer; max-width: calc(100% - 24px); }
+.cv-team-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-pill { display: inline-block; padding: 0 7px; border-radius: 9px; border: 1px solid var(--border-strong); font-size: 11px; line-height: 17px; color: var(--fg-dim); white-space: nowrap; }
+.cv-pill.st-running { border-color: var(--node-active); color: var(--node-active); }
+.cv-pill.st-paused { border-color: var(--node-approval); color: var(--node-approval); }
+.cv-pill.st-done { border-color: var(--green); color: var(--green); }
+.cv-pill.st-failed { border-color: var(--red); color: var(--red); }
+.cv-edge-team path { stroke: var(--node-active); stroke-width: 1.5; }
+.cv-h4 { margin: 4px 0; font-size: 12px; font-weight: 600; }
+.cv-warn { color: var(--node-approval); font-size: 12px; }
+.cv-field { display: flex; flex-direction: column; gap: 4px; }
+.cv-field > span { font-size: 11px; color: var(--fg-dim); }
+.cv-field input:not([type]), .cv-field select { border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.cv-check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.cv-check input[type='number'] { width: 72px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 2px 4px; background: var(--bg); color: var(--fg); }
+.cv-link { border: none; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-align: left; }
+.cv-relay { border: 1px solid var(--node-approval); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.cv-msg { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+.cv-msgs { display: flex; flex-direction: column; gap: 4px; }
+.cv-msg-row summary { cursor: pointer; font-size: 12px; }
+.cv-feed-team { margin-bottom: 18px; }
+.cv-feed-team-head { display: flex; gap: 8px; align-items: center; margin: 4px 0 8px; }
+.cv-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.cv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.cv-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--bg-surface); display: flex; flex-direction: column; gap: 6px; }
+.cv-card.st-waiting { border-color: var(--node-approval); }
+.cv-card.st-running { border-color: var(--node-active); }
+.cv-card-head { display: flex; gap: 8px; align-items: center; border: none; background: none; padding: 0; color: var(--fg); font: inherit; cursor: pointer; text-align: left; }
+.cv-card-title { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-card-task { font-size: 12px; }
+.cv-card-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; }

@@ -6,12 +6,12 @@ import { useWorkbench } from '@/store'
 import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import { createTerminalSession, xtermTheme, type TerminalSession } from '../terminal/terminalSession'
-import type { CanvasNode, NodeRuntime } from '../../../../shared/canvas'
+import type { CanvasNode, NodeRuntime, NodeTeamRuntime } from '../../../../shared/canvas'
 import type { CanvasCall } from './CanvasView'
 
 export type TerminalNodeData = {
   node: CanvasNode
-  rt: NodeRuntime | undefined
+  rt: (NodeRuntime & Partial<NodeTeamRuntime>) | undefined
   channelId: string
   name: string
   mark: Parameters<typeof AgentMark>[0]['agent']
@@ -91,6 +91,8 @@ function TerminalNode({ data, selected }: NodeProps<Node<TerminalNodeData>>): JS
       <div className="cv-node-head">
         <AgentMark agent={data.mark} size={14} />
         <span className="cv-node-title">{data.name}</span>
+        {rt?.role && <span className="cv-pill">{t(`canvas.role_${rt.role}`)}</span>}
+        {(rt?.unread ?? 0) > 0 && <span className="cv-badge" title={t('canvas.unread', { n: rt?.unread ?? 0 })}>{rt?.unread}</span>}
         <span className="cv-node-branch" title={node.worktree?.path || t('canvas.repoRoot')}>
           {node.worktree ? node.worktree.branch : t('canvas.repoRoot')}
         </span>
