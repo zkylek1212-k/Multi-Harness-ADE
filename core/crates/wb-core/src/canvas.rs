@@ -1164,11 +1164,17 @@ pub fn phone_call(core: &Arc<Core>, ws: &str, op: &str, req: &Value) -> Value {
     wrap(dispatch(core, ws, op, req, Origin::Phone))
 }
 
-/// File contents never go to a phone (§3.9): hook cards keep names and line counts only
+/// File contents never go to a phone (§3.9): hook cards keep names and line counts only. Team messages keep their
+/// first 200 characters, enough to decide on a relay card (cowork-team-implement.md §5.4).
 pub fn for_phone(mut v: Value) -> Value {
     fn walk(v: &mut Value) {
         match v {
             Value::Object(o) => {
+                if o.contains_key("teamId") && o.contains_key("kind") {
+                    if let Some(Value::String(t)) = o.get_mut("text") {
+                        *t = js_prefix(t, 200);
+                    }
+                }
                 if let Some(Value::Object(h)) = o.get_mut("hook") {
                     h.remove("raw");
                     h.remove("command");
@@ -1314,5 +1320,8 @@ mod tests {
             assert!(!out.contains(bad), "{bad}");
         }
         assert!(out.contains("a.rs") && out.contains("\"added\":1"));
+        let long = "x".repeat(5000);
+        let v = json!({ "data": { "relays": [{ "id": "m", "teamId": "t", "kind": "message", "text": long }] } });
+        assert_eq!(for_phone(v)["data"]["relays"][0]["text"].as_str().unwrap().len(), 200, "team messages are cut for the phone");
     }
 }

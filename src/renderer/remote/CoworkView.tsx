@@ -198,6 +198,42 @@ export default function CoworkView({
               )
             })}
           </div>
+          {(view.teams?.length ?? 0) > 0 && (
+            <>
+              <div className="section-head"><h2>{t('cv_teams')}</h2></div>
+              <p className="footnote">{t('cv_teamDesktopOnly')}</p>
+              <div className="stack">
+                {view.teams.map((tm) => (
+                  <div key={tm.id} className="bubble form-card">
+                    <div className="session-card">
+                      <span className="card-main">
+                        <span className="card-title">{tm.name}</span>
+                        <span className="card-sub">{tm.goal.split('\n')[0]}</span>
+                      </span>
+                      <span className={`pill ${tm.status === 'running' ? 'run' : tm.status === 'paused' ? 'wait' : 'idle'}`}>
+                        <span className="dot" aria-hidden="true" />
+                        {t(`cv_team_${tm.status}` as Key)}
+                      </span>
+                    </div>
+                    {view.relays.filter((m) => m.teamId === tm.id).map((m) => (
+                      <div key={m.id} className="cw-card">
+                        <p className="card-sub">{t('cv_relayFrom', { from: name(m.from), to: name(m.to) })} · {m.kind}</p>
+                        {/* The backend sends at most 200 characters of an agent's message to the phone */}
+                        <pre className="cw-pre">{m.text}</pre>
+                        <div className="cw-actions">
+                          <button className="btn" disabled={busy} onClick={() => run(() => conn.canvas(windowId, 'relay.reject', { channelId: c.id, messageId: m.id }))}>{t('cv_relayReject')}</button>
+                          <button className="btn prominent" disabled={busy || view.stop.requested} onClick={() => run(() => conn.canvas(windowId, 'relay.approve', { channelId: c.id, messageId: m.id }))}>{t('cv_relaySend')}</button>
+                        </div>
+                      </div>
+                    ))}
+                    {tm.status === 'running' && (
+                      <button className="btn" disabled={busy} onClick={() => run(() => conn.canvas(windowId, 'team.pause', { channelId: c.id, teamId: tm.id }))}>{t('cv_teamPause')}</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className="section-head"><h2>{t('cv_feed')}</h2></div>
           <div className="stack">
             {c.events.length === 0 && <p className="empty">{t('cv_noEvents')}</p>}

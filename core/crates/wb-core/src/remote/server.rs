@@ -58,8 +58,8 @@ const PAIR_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // without 0/O 
 const PUSH_SUBJECT: &str = "https://github.com/zkylek1212-k/Multi-Harness-ADE";
 const MAX_BACKLOG: usize = 8 * 1024 * 1024;
 /// Cowork 2.0 on the phone (cowork2.0-implement.md §3.9): read, answer approvals, send a message, stage-1 stop. Everything else is desktop-only.
-pub const PHONE_CANVAS_OPS: [&str; 6] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop"];
-pub const PHONE_AUDITED_OPS: [&str; 4] = ["node.approve", "node.reject", "node.message", "stop"];
+pub const PHONE_CANVAS_OPS: [&str; 9] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
+pub const PHONE_AUDITED_OPS: [&str; 7] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
 const BUILTIN: [(&str, &str, &str); 5] = [("claude", "Claude Code", "agent"), ("codex", "Codex", "agent"), ("antigravity", "Antigravity", "agent"), ("powershell", "PowerShell", "shell"), ("cmd", "Command Prompt", "shell")];
 
 // A preview iframe is on another port, maybe another computer, so frame-src cannot be just 'self'. A framed page reaches nothing here.
@@ -1327,6 +1327,7 @@ fn canvas_audit(op: &str, req: &Value, result: &Value, device_id: Option<&str>) 
     let mut row = json!({
         "deviceId": device_id, "op": js_prefix(op, 40), "channelId": id("channelId"), "nodeId": id("nodeId"),
         "requestId": id("requestId"), "sessionGeneration": id("sessionGeneration"), "textLength": len("text"), "reasonLength": len("reason"), "ok": result["ok"],
+        "messageId": id("messageId"), "teamId": id("teamId"),
     });
     if result["ok"] != json!(true) {
         row["code"] = result["code"].clone();

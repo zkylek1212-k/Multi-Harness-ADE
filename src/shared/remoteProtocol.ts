@@ -157,8 +157,8 @@ export const BUILTIN_LAUNCHERS: RemoteLauncher[] = [
   { key: 'cmd', title: 'Command Prompt', kind: 'shell' }
 ]
 
-/** 手機可以呼叫的畫布操作（§3.9）；建立／刪除節點、合併、捨棄、全部結束、解除停止只在桌面。與 wb-core PHONE_CANVAS_OPS 相同 */
-export const PHONE_CANVAS_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['channels.list', 'channel.get', 'node.approve', 'node.reject', 'node.message', 'stop'])
+/** 手機可以呼叫的畫布操作（§3.9）；建立／刪除節點、合併、捨棄、全部結束、解除停止、開始團隊與核准合併請求只在桌面。與 wb-core PHONE_CANVAS_OPS 相同 */
+export const PHONE_CANVAS_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['channels.list', 'channel.get', 'node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])
 
 /** 這些操作要留下稽核紀錄（只記識別碼與長度，不含訊息或理由內容）；白名單外的嘗試一律也記 */
-export const PHONE_AUDITED_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['node.approve', 'node.reject', 'node.message', 'stop'])
+export const PHONE_AUDITED_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])
