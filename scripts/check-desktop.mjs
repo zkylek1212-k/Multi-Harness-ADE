@@ -15,7 +15,9 @@ fs.mkdirSync(path.join(ws, 'src'), { recursive: true })
 fs.writeFileSync(path.join(ws, 'README.md'), '# hi\n')
 fs.writeFileSync(path.join(ws, 'src', 'a.ts'), 'export const a = 1\n')
 execFileSync('git', ['init', '-b', 'main'], { cwd: ws, stdio: 'ignore' })
-fs.writeFileSync(path.join(base, 'data', 'settings.json'), JSON.stringify({ lastWorkspace: ws, recentWorkspaces: [ws], language: 'en' }))
+const other = path.join(base, 'other-project')
+fs.mkdirSync(other)
+fs.writeFileSync(path.join(base, 'data', 'settings.json'), JSON.stringify({ lastWorkspace: ws, recentWorkspaces: [ws, other], language: 'en' }))
 const d = new Desktop({ profile, base })
 
 let passed = 0
@@ -141,6 +143,32 @@ try {
   const errors = await p.errors()
   assert.ok(errors.some((e) => /Cannot open data:/.test(e || '')), 'the data: URL was refused')
   assert.deepEqual(errors.filter((e) => !/Cannot open data:/.test(e || '')), [])
+  await check('dashboard: a pinned folder goes to the top, stays there after a reload, and comes back down when unpinned', async () => {
+    const names = `[...document.querySelectorAll('.dash-folder-group .dash-folder-name')].map((e) => e.textContent.trim())`
+    const openDashboard = async () => {
+      await p.waitFor(`!!window.api && !!document.querySelector('.left-segmented button')`, 30000)
+      await p.eval(`(document.querySelector('.left-segmented button').click(), true)`)
+      await p.waitFor(`document.querySelectorAll('.dash-folder-group').length === 2`)
+    }
+    await openDashboard()
+    // The open workspace leads by default
+    assert.deepEqual(await p.eval(names), ['project', 'other-project'])
+    await p.eval(`(document.querySelectorAll('.dash-folder-group')[1].querySelector('.dash-folder-pin-btn').click(), true)`)
+    await p.waitFor(`JSON.stringify(${names}) === '["other-project","project"]'`)
+    assert.equal(await p.eval(`document.querySelector('.dash-folder-group').classList.contains('is-pinned') && document.querySelectorAll('.dash-folder-group.is-pinned').length === 1`), true)
+    // The old page may answer once more before it goes: the new one is the one without this marker
+    await p.eval(`(window.__beforeReload = true, true)`)
+    p.eval(`(location.reload(), true)`).catch(() => {})
+    await p.waitFor(`!window.__beforeReload && !!window.api && !!document.querySelector('.left-segmented button')`, 30000)
+    await openDashboard()
+    assert.deepEqual(await p.eval(names), ['other-project', 'project'])
+    // Unpin from the right-click menu: its first item
+    await p.eval(`(document.querySelector('.dash-folder-group .dash-folder-header').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 200 })), true)`)
+    await p.waitFor(`document.querySelector('.dash-context-menu .dash-context-item')?.textContent.trim() === 'Unpin'`)
+    await p.eval(`(document.querySelector('.dash-context-menu .dash-context-item').click(), true)`)
+    await p.waitFor(`JSON.stringify(${names}) === '["project","other-project"]' && !document.querySelector('.dash-context-menu')`)
+    assert.equal(await p.eval(`document.querySelectorAll('.dash-folder-group.is-pinned').length`), 0)
+  })
   await check('Cowork canvas settles instead of calling the backend in a loop', async () => {
     p.eval(`(localStorage.setItem('wb-ui-mode', 'cowork'), location.reload(), true)`).catch(() => {})
     await p.waitFor(`!!window.api && !!document.querySelector('.react-flow')`, 30000)

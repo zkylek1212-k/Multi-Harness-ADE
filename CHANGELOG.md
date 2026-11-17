@@ -22,6 +22,12 @@
 - 手機可以看 Channel、審批、傳訊息與停止；建立節點、合併與捨棄只在桌面。
 - On the phone you can view channels, answer approvals, send a message and stop. Creating nodes, merging and discarding stay on the desktop.
 
+## [0.2.1] - 2026-11-17
+
+### Added / 新增
+- Dashboard 的 session 資料夾可以釘選置頂：在資料夾上按右鍵選「釘選置頂」，或按標題列的圖釘。釘選的資料夾固定排在最上面，重開 App 後仍然保留。（PR #69）
+- Session folders on the Dashboard can be pinned to the top: right-click a folder and choose "Pin to Top", or use the pin button in its header. Pinned folders stay above the rest and are remembered across restarts.
+
 ## [0.2.0] - 2026-11-09
 
 ### Changed / 變更
