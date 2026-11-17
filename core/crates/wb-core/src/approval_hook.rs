@@ -187,10 +187,40 @@ fn write_obj(file: &Path, v: &Value) -> Result<(), String> {
 /// rule in settings.json. agy's `--settings` cannot carry MCP servers (Phase 0), and a session `permissions` would
 /// replace the user's own allow list for that session, so the rule is user-level too. Outside the app the server
 /// offers no tools, so the rule allows nothing there.
+/// The wb-hook that agy's user-wide entries run. Every agy session and the Antigravity IDE start `wb-hook mcp` from
+/// them and keep it running, which holds the exe: pointed at the install, that lock makes the next app update fail
+/// to replace wb-hook.exe. So they run a copy in the data dir, named by its content: a new version or build gets a
+/// new file and never has to replace one in use. Copies nothing runs any more are removed on the way.
+fn agy_hook_exe(core: &Core) -> Option<PathBuf> {
+    let src = hook_exe()?;
+    Some(content_copy(&src, &core.data_dir.join("agy-hook")).unwrap_or(src))
+}
+
+fn content_copy(src: &Path, dir: &Path) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(src).ok()?;
+    let hash: String = Sha256::digest(&bytes).iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let dest = dir.join(format!("wb-hook-{hash}.exe"));
+    if !dest.exists() {
+        std::fs::create_dir_all(dir).ok()?;
+        let tmp = dir.join(format!("{}.tmp", uuid()));
+        if std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &dest)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+    }
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        if e.path() != dest {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    Some(dest)
+}
+
 pub fn sync_agy(core: &Core) -> Result<(), String> {
     // agy runs hook commands through cmd with Go-style \" escapes, which cmd takes literally: the command must need
     // no quotes, like Codex's. Its stderr ("not recognized", CP950) then broke agy's protobuf (live test 2026-11-13).
-    let plain = hook_exe().and_then(|exe| plain_path(&exe));
+    let plain = agy_hook_exe(core).and_then(|exe| plain_path(&exe));
     let want_hook = enabled(core, "antigravity") && !core.is_cli_bypass();
     let want_mcp = mcp_enabled(core, "antigravity");
 
@@ -453,6 +483,32 @@ pub fn card(cli: &str, raw: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// agy's entries must never point at the install, and a copy in use must never need replacing
+    #[test]
+    fn agy_runs_a_content_named_copy() {
+        let root = std::env::temp_dir().join(format!("wb-agy-copy-{}", uuid()));
+        let dir = root.join("agy-hook");
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("wb-hook.exe");
+        std::fs::write(&src, b"build one").unwrap();
+        let a = content_copy(&src, &dir).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), b"build one");
+        assert!(a.starts_with(&dir) && a.file_name().unwrap().to_string_lossy().starts_with("wb-hook-"));
+        // Same build: the same file, untouched
+        assert_eq!(content_copy(&src, &dir).unwrap(), a);
+        // While a session runs it, the old copy stays open; a new build still gets its own file
+        let held = std::fs::File::open(&a).unwrap();
+        std::fs::write(&src, b"build two").unwrap();
+        let b = content_copy(&src, &dir).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&b).unwrap(), b"build two");
+        drop(held);
+        // Once nothing holds it, the next sync clears the old copy
+        assert_eq!(content_copy(&src, &dir).unwrap(), b);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Inputs recorded in the Phase 0 spike (Claude 2.1.322, Codex 0.167.2, agy 1.5.6), paths shortened
     #[test]
