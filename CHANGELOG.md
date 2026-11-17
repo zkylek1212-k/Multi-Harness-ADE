@@ -1,26 +1,40 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.2] - 2026-11-17
 
 ### Before you upgrade / 升級前
-- 舊 Cowork 的會議與背景執行已移除。升級前請先把舊 Cowork 留下的 worktree 合併或收尾；升級後 Cowork 模式右欄的「舊 Cowork 的 worktree」只會列出它們，不會自動刪除。
-- The old Cowork meetings and background runs are removed. Merge or finish the worktrees the old Cowork left behind before upgrading. After upgrading, "Old Cowork worktrees" in the Cowork inspector only lists them; nothing is deleted automatically.
+- 舊 Cowork 的會議與背景執行已移除。升級前請先把舊 Cowork 留下的 worktree 合併或收尾；升級後 Cowork 模式右欄「詳細」分頁的「舊 Cowork 的 worktree」只會列出它們，不會自動刪除。
+- The old Cowork meetings and background runs are removed. Merge or finish the worktrees the old Cowork left behind before upgrading. After upgrading, "Old Cowork worktrees" in the Details tab of the Cowork panel only lists them; nothing is deleted automatically.
 
 ### Changed / 變更
-- Cowork 改成第三種模式：一張可平移縮放的畫布，每個 Agent 是一個互動式終端節點，預設各自一個 worktree 與分支。可以在畫布上拉線交接（只產生草稿，不自動送出）、審批、提交、預覽後合併、清理或捨棄。
-- Cowork is now a third mode: a canvas you can pan and zoom, where each agent is an interactive terminal node with its own worktree and branch by default. On the canvas you draw handoffs, which only create drafts and send nothing. You also answer approvals, commit, merge after a preview, and clean up or discard.
+- Cowork 改成第三種模式：一張可平移縮放的畫布，每個 Agent 是一個互動式終端節點，預設各自一個 worktree 與分支。左欄是 Channels 與 Bot 名單，右欄是接手面板與群組對話；中間可以切換「畫布」與「卡片」兩種檢視。
+- Cowork is now a third mode: a canvas you can pan and zoom, where each agent is an interactive terminal node with its own worktree and branch by default. The left rail holds channels and the bot roster, the right panel holds Take Over and the group chat, and the middle switches between Canvas and Cards.
 - 主席會議、任務看板、自動規劃與背景執行已移除，沒有對等替代。
 - Chair meetings, the task board, automatic planning and background runs are removed and have no direct replacement.
 
 ### Added / 新增
-- 審批卡：能辨識的提示顯示「允許／拒絕」，認不出的只提供回終端回答。Claude Code（預設）與 Codex（需在 Codex 內信任一次）可在卡片上看到改動內容；故障一律交還給 CLI 自己的提示，不會自動放行。
-- Approval cards show Approve and Reject when the prompt is recognized; otherwise they only offer answering in the terminal. Claude Code (on by default) and Codex (after you trust the hook once inside Codex) show the change itself on the card. Any failure goes back to the CLI's own prompt and never approves.
-- 停止（Ctrl+Shift+Backspace）：對同一個 repo 的所有 Cowork 節點送一次中斷鍵；「全部結束」才會結束行程。
-- Stop (Ctrl+Shift+Backspace) sends one interrupt key to every Cowork node of the repository; "End all" ends the processes.
+- 群組：一個 Channel 就是一個群組，加進來的 Agent 自動成為成員，第一個加入的是隊長（可在 Bot 名單更換）。在右欄對話框輸入的話會直接打進目標 Agent 的終端並送出，預設給隊長。
+- Groups: a channel is a group. Every agent you add to it is a member, and the first one leads (change it in the bot roster). What you type in the chat box on the right goes into the target agent's terminal and is sent; by default it goes to the lead.
+- Agent 之間透過 App 內建的 workbench 工具互相派任務、傳訊息、回報與請求合併。轉達模式有三種：每則都等你核准（預設）、只核准組員的訊息、全自動（隊長自行把組員的分支合併進自己的 worktree）。自動模式有訊息數上限，超過會暫停群組。
+- Agents assign tasks, message each other, report and ask for merges through the app's built-in workbench tools. Three relay modes: every message waits for you (the default), only members' messages wait, or fully automatic, where the lead merges members' branches into its own worktree. The automatic modes have message caps; hitting one pauses the group.
+- 畫布上兩個 Agent 互傳過訊息就會出現連線，訊息還在路上時連線會發光；卡片模式每個 session 一張卡，顯示狀態、任務、最後回報與等你處理的事。
+- On the canvas, two agents that have messaged each other get a line, which glows while a message is on its way. In Cards, each session is a card with its status, task, last report and anything waiting for you.
+- 審批卡浮在節點下方，有行內紅綠 diff 與「允許／拒絕」；認不出的提示只提供回終端回答。Claude Code（預設）與 Codex（需在 Codex 內信任一次）可在卡片上看到改動內容；故障一律交還給 CLI 自己的提示，不會自動放行。
+- Approval cards float under their node with an inline red and green diff and Approve and Reject; prompts that are not recognized only offer answering in the terminal. Claude Code (on by default) and Codex (after you trust the hook once inside Codex) show the change itself. Any failure goes back to the CLI's own prompt and never approves.
+- 接手：中斷 Agent 一次，並把鍵盤交到它的終端。
+- Take Over interrupts the agent once and puts the keyboard in its terminal.
+- 緊急停止（或 Ctrl+Shift+Backspace）：對同一個 repo 的所有 Cowork 節點送一次中斷鍵；「全部結束」才會結束行程。
+- Emergency Break (or Ctrl+Shift+Backspace) sends one interrupt key to every Cowork node of the repository; "End all" ends the processes.
 - 代理設定：沿用系統環境（預設，與先前相同）、指定代理或強制直連，可依 Agent 個別改選；repo 內的設定不能改代理。
 - Proxy settings: inherit the system environment (the default, same as before), a custom proxy, or direct, with a per-agent choice. Repository settings cannot set a proxy.
-- 手機可以看 Channel、審批、傳訊息與停止；建立節點、合併與捨棄只在桌面。
-- On the phone you can view channels, answer approvals, send a message and stop. Creating nodes, merging and discarding stay on the desktop.
+- 手機可以看 Channel、審批、傳訊息、核准或拒絕 Agent 之間的訊息、暫停群組與停止；建立節點、合併與捨棄只在桌面。
+- On the phone you can view channels, answer approvals, send a message, pass or reject messages between agents, pause a group and stop. Creating nodes, merging and discarding stay on the desktop.
+
+### Notes / 注意
+- 為了讓 Antigravity 使用 workbench 工具，App 會在 `~/.gemini/config/mcp_config.json` 加一個 `workbench` 伺服器，並在 `~/.gemini/antigravity-cli/settings.json` 加一條允許規則；在 App 外它不提供任何工具。它執行的是 App 資料夾裡的一份副本，所以開著 Antigravity 也不會擋住 App 更新。可在「設定 → Cowork → 團隊協作工具」關閉。
+- So Antigravity can use the workbench tools, the app adds a `workbench` server to `~/.gemini/config/mcp_config.json` and one allow rule to `~/.gemini/antigravity-cli/settings.json`. Outside the app it offers no tools. It runs a copy kept in the app's data folder, so a running Antigravity never blocks an app update. Turn it off under Settings → Cowork → Team tools.
+- 權限模式仍是一個共用設定：開著略過模式時 Agent 不會詢問，Cowork 也不會出現審批卡。
+- Permission mode is still one shared setting: with Bypass mode on, agents never ask and Cowork shows no approval cards.
 
 ## [0.2.1] - 2026-11-17
 
