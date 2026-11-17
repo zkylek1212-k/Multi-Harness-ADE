@@ -764,6 +764,42 @@
   cursor: grabbing;
 }
 
+/* Pin: always shown on a pinned folder, on hover otherwise */
+.dash-folder-pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.dash-folder-header:hover .dash-folder-pin-btn,
+.dash-folder-pin-btn:focus-visible {
+  opacity: 0.75;
+}
+
+.dash-folder-pin-btn:hover {
+  opacity: 1;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.dash-folder-pin-btn.pinned {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.dash-folder-pin-btn.pinned svg {
+  fill: currentColor;
+}
+
 .dash-folder-chevron {
   display: inline-flex;
   align-items: center;
