@@ -7,7 +7,7 @@ import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import { createTerminalSession, xtermTheme, type TerminalSession } from '../terminal/terminalSession'
 import type { CanvasNode, NodeRuntime, NodeTeamRuntime } from '../../../../shared/canvas'
-import type { CanvasCall } from './CanvasView'
+import { FOCUS_EVENT, type CanvasCall } from './CanvasView'
 
 export type TerminalNodeData = {
   node: CanvasNode
@@ -68,6 +68,15 @@ function TerminalNode({ data, selected }: NodeProps<Node<TerminalNodeData>>): JS
     else s.wake()
   }, [asleep])
 
+  // Take Over and "answer in the terminal" hand the keyboard to this node
+  useEffect(() => {
+    const onFocus = (e: Event): void => {
+      if ((e as CustomEvent<string>).detail === node.id) session.current?.focus()
+    }
+    window.addEventListener(FOCUS_EVENT, onFocus)
+    return () => window.removeEventListener(FOCUS_EVENT, onFocus)
+  }, [node.id])
+
   const act = async (fn: () => Promise<unknown>): Promise<void> => {
     setBusyAction(true)
     await fn()
@@ -89,9 +98,10 @@ function TerminalNode({ data, selected }: NodeProps<Node<TerminalNodeData>>): JS
       />
       <Handle type="target" position={Position.Left} className="cv-handle" />
       <div className="cv-node-head">
+        <span className="cv-node-prompt" aria-hidden="true">&gt;_</span>
         <AgentMark agent={data.mark} size={14} />
         <span className="cv-node-title">{data.name}</span>
-        {rt?.role && <span className="cv-pill">{t(`canvas.role_${rt.role}`)}</span>}
+        {rt?.role === 'lead' && <span className="cv-pill lead" title={t('canvas.role_lead')}>★</span>}
         {(rt?.unread ?? 0) > 0 && <span className="cv-badge" title={t('canvas.unread', { n: rt?.unread ?? 0 })}>{rt?.unread}</span>}
         <span className="cv-node-branch" title={node.worktree?.path || t('canvas.repoRoot')}>
           {node.worktree ? node.worktree.branch : t('canvas.repoRoot')}
@@ -124,49 +134,6 @@ function TerminalNode({ data, selected }: NodeProps<Node<TerminalNodeData>>): JS
           </div>
         )}
       </div>
-      {a && rt?.sessionGeneration && (
-        <div className="cv-approval nodrag nowheel">
-          <div className="cv-approval-head">
-            <span className="cv-approval-src">{t(`canvas.source_${a.source}`)}</span>
-            <b>{a.title}</b>
-          </div>
-          {a.hook?.files?.map((f) => (
-            <details key={f.path} className="cv-approval-file">
-              <summary>
-                {f.path} <span className="cv-add">+{f.added}</span> <span className="cv-del">-{f.removed}</span>
-              </summary>
-              {f.patch ? (
-                <pre className="cv-diff">{f.patch}</pre>
-              ) : (
-                <>
-                  {f.before && <pre className="cv-diff cv-before">{f.before}</pre>}
-                  {f.after && <pre className="cv-diff cv-after">{f.after}</pre>}
-                </>
-              )}
-            </details>
-          ))}
-          {a.hook?.command && !a.hook.files?.length && <pre className="cv-diff">{a.hook.command}</pre>}
-          {!a.hook && <pre className="cv-tail">{a.tail.split('\n').slice(-8).join('\n')}</pre>}
-          <div className="cv-approval-actions">
-            {a.canReject && (
-              <button className="cv-btn" disabled={busyAction} onClick={() => void act(() => call('node.reject', { ...ids, requestId: a.requestId, sessionGeneration: a.sessionGeneration }))}>
-                {t('canvas.reject')}
-              </button>
-            )}
-            {a.canApprove && !data.stopped && (
-              <button className="cv-btn primary" disabled={busyAction} onClick={() => void act(() => call('node.approve', { ...ids, requestId: a.requestId, sessionGeneration: a.sessionGeneration }))}>
-                {t('canvas.approve')}
-              </button>
-            )}
-            {/* 認不出問題與選項時不猜按鍵，只能回終端自己答（§3.4） */}
-            {!a.canApprove && !a.canReject && (
-              <button className="cv-btn" onClick={() => session.current?.focus()}>
-                {t('canvas.answerInTerminal')}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
       <Handle type="source" position={Position.Right} className="cv-handle" />
     </div>
   )

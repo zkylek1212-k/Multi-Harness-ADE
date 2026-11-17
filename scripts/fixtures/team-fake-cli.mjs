@@ -2,8 +2,9 @@
 // from --mcp-config and talks MCP to them over stdio, so the real `wb-hook mcp` and the real pipe are in the path.
 // Typed lines (Enter runs one):
 //   call <tool> <json>    call a team tool
-//   [Agent Workbench] ... the app's notice: call read_inbox, then run every "DO: <tool> <json>" line found in the
-//                         messages, the way a model follows its task
+//   the app's notice      ("... new message from ... read_inbox tool ..."): call read_inbox, then do what the mail says
+//   anything else         a prompt from the user's chat: recorded as PROMPT, then done
+// "Doing" a text means running every `DO: <tool> <json> ;;` found in it, the way a model follows instructions.
 // Every result goes to <tmp>/wb-team-fake/<hex of cwd>.jsonl as {kind, tool, ok, text}: a long text would wrap on
 // screen, and the worktree must stay clean for merges. The screen shows short lines and a "> " prompt, never a menu.
 import { spawn } from 'node:child_process'
@@ -85,14 +86,21 @@ process.stdin.on('data', (d) => {
 
 async function run(cmd) {
   out('\r\n')
-  if (cmd.startsWith('[Agent Workbench]')) {
+  const act = async (text) => {
+    for (const m of text.matchAll(/DO: (\w+) (\{.*?\}) ;;/g)) await call(m[1], JSON.parse(m[2]))
+  }
+  if (/new messages? from/.test(cmd) && cmd.includes('read_inbox tool')) {
     const inbox = await call('read_inbox', {})
     record({ kind: 'INBOX', text: inbox })
     out('INBOX read\r\n')
-    for (const m of inbox.matchAll(/^DO: (\w+) (\{.*\})$/gm)) await call(m[1], JSON.parse(m[2]))
+    await act(inbox)
   } else if (cmd.startsWith('call ')) {
     const [, tool, json] = /^call (\w+) ?(.*)$/.exec(cmd) || []
     await call(tool, json ? JSON.parse(json) : {})
+  } else if (cmd) {
+    record({ kind: 'PROMPT', text: cmd })
+    out('PROMPT taken\r\n')
+    await act(cmd)
   }
   out('> ')
 }

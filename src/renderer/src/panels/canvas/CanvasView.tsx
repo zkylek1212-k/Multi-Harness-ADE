@@ -1,4 +1,8 @@
-// Cowork 2.0 畫布模式（cowork2.0-implement.md §2）：左欄 Channels／Agents、中央 React Flow 畫布或 Feed、右欄 Inspector。
+// Cowork 模式（cowork-demo.jpg 是版面依據）：
+//   上方 ── 模式切換、卡片／畫布、Proxy、緊急停止
+//   左欄 ── 搜尋、Channels（一個 Channel 就是一個群組）、Bot Roster
+//   中央 ── 畫布（終端節點、訊息流動的連線、浮動審批卡）或卡片模式
+//   右欄 ── Agent Collaboration & Control：Take Over 與群組對話；「詳細」分頁是節點的改動與合併
 // 狀態一律以後端（wb-core canvas.rs）推來的 ChannelView 為準；這裡只送操作、不回存整份 Channel。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -23,14 +27,19 @@ import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { CanvasNode, ChannelEvent, ChannelSummary, ChannelView, CanvasOp, CanvasOps } from '../../../../shared/canvas'
 import TerminalNode, { type TerminalNodeData } from './TerminalNode'
+import ApprovalNode, { type ApprovalNodeData } from './ApprovalNode'
 import Inspector, { type Selection } from './Inspector'
-import { TeamFeed, TeamFrame, type TeamFrameData } from './TeamPanels'
+import ChatPanel from './ChatPanel'
+import CardsView from './CardsView'
 
 const NODE_SIZE = { width: 640, height: 400 }
-const nodeTypes = { terminal: TerminalNode, team: TeamFrame }
-type CanvasNodeData = TerminalNodeData | TeamFrameData
+const nodeTypes = { terminal: TerminalNode, approval: ApprovalNode }
+type CanvasNodeData = TerminalNodeData | ApprovalNodeData
 
 export type CanvasCall = <K extends CanvasOp>(op: K, req?: CanvasOps[K]['req']) => Promise<CanvasOps[K]['res'] | undefined>
+
+/** A terminal node listens for this to take the keyboard (Take Over, "answer in the terminal") */
+export const FOCUS_EVENT = 'wb-canvas-focus'
 
 // pty:launchers 只回 agents/*.yaml 與 Custom Agent；內建三家在這裡補上
 const BUILTIN_AGENTS: CliLauncher[] = [
@@ -43,6 +52,8 @@ type MarkId = Parameters<typeof AgentMark>[0]['agent']
 const MARKS = ['claude', 'codex', 'antigravity', 'powershell', 'cmd', 'bash', 'custom-agent']
 /** AgentMark 只認得內建 CLI；yaml launcher 用它實際跑的 CLI 的圖示 */
 export const markOf = (cli: string): MarkId => (MARKS.includes(cli) ? cli : 'shell') as MarkId
+
+type BotState = 'offline' | 'ended' | 'idle' | 'active' | 'waiting'
 
 function remember(key: string, value: string | null): void {
   try {
@@ -77,12 +88,16 @@ function CanvasShell(): JSX.Element {
   const [view, setView] = useState<ChannelView | null>(null)
   const [launchers, setLaunchers] = useState<CliLauncher[]>([])
   const [selection, setSelection] = useState<Selection>(null)
-  const [mode, setMode] = useState<'canvas' | 'feed'>('canvas')
+  const [mode, setMode] = useState<'canvas' | 'cards'>('canvas')
+  const [tab, setTab] = useState<'chat' | 'details'>('chat')
   const [inRoot, setInRoot] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [nodes, setNodes] = useState<Node<CanvasNodeData>[]>([])
   const [zoom, setZoom] = useState(1)
   const [recentEdge, setRecentEdge] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [proxy, setProxy] = useState('')
+  const search = useRef<HTMLInputElement>(null)
   const idRef = useRef(channelId)
   idRef.current = channelId
 
@@ -146,12 +161,31 @@ function CanvasShell(): JSX.Element {
     [loadList]
   )
 
-  // 只在 App 有焦點時作用；Claude Code 自己用 Esc／雙 Esc，所以不用 Esc（§2.3）
+  // The proxy pill shows what new sessions will start with; read again when the window gets focus (settings may have changed)
+  useEffect(() => {
+    const read = (): void => {
+      window.api.settings
+        .get()
+        .then((s) => {
+          const p = s.proxy
+          setProxy(!p || p.mode === 'inherit' ? t('canvas.proxyInherit') : p.mode === 'direct' ? t('canvas.proxyDirect') : (p.url || '').replace(/^\w+:\/\//, '').replace(/\/$/, ''))
+        })
+        .catch(() => {})
+    }
+    read()
+    window.addEventListener('focus', read)
+    return () => window.removeEventListener('focus', read)
+  }, [t])
+
+  // 只在 App 有焦點時作用；Claude Code 自己用 Esc／雙 Esc，所以緊急停止不用 Esc（§2.3）
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.ctrlKey && e.shiftKey && e.key === 'Backspace') {
         e.preventDefault()
         void call('stop')
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        search.current?.focus()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -163,6 +197,12 @@ function CanvasShell(): JSX.Element {
     return [...BUILTIN_AGENTS, ...extra]
   }, [launchers])
   const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name || id, [agents])
+  const markOfAgent = useCallback((agent: string): MarkId => markOf(agents.find((a) => a.id === agent)?.cli || agent), [agents])
+
+  const focusTerminal = useCallback((id: string): void => {
+    // After React has put the node on screen
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent(FOCUS_EVENT, { detail: id })), 350)
+  }, [])
 
   // 後端狀態變了才重建節點；拖曳中的位置以本地為準，放開後才送 node.layout
   const dragging = useRef(new Set<string>())
@@ -182,27 +222,49 @@ function CanvasShell(): JSX.Element {
           style: { width: n.size.width, height: n.size.height },
           dragHandle: '.cv-node-head',
           selected: selection?.kind === 'node' && selection.id === n.id,
-          data: { node: n, rt: view.runtime[n.id], channelId: view.channel.id, name: agentName(n.agent), mark: markOf(agents.find((a) => a.id === n.agent)?.cli || n.agent), zoom, stopped: view.stop.requested, call }
+          data: { node: n, rt: view.runtime[n.id], channelId: view.channel.id, name: agentName(n.agent), mark: markOfAgent(n.agent), zoom, stopped: view.stop.requested, call }
         }
       })
-      // A frame behind each team, sized from its members as drawn; it never moves on its own
-      const frames: Node<CanvasNodeData>[] = view.teams.flatMap((team) => {
-        const rects = terminals.filter((n) => team.memberIds.includes(n.id)).map((n) => ({ x: n.position.x, y: n.position.y, w: Number(n.style?.width), h: Number(n.style?.height) }))
-        if (rects.length === 0) return []
-        const x = Math.min(...rects.map((r) => r.x)) - 24
-        const y = Math.min(...rects.map((r) => r.y)) - 56
-        const w = Math.max(...rects.map((r) => r.x + r.w)) - x + 24
-        const h = Math.max(...rects.map((r) => r.y + r.h)) - y + 24
-        const pending = view.relays.filter((m) => m.teamId === team.id).length + view.mergeRequests.filter((m) => m.team === team.id).length
-        return [{ id: `team:${team.id}`, type: 'team', position: { x, y }, style: { width: w, height: h, pointerEvents: 'none' }, zIndex: -1, draggable: false, selectable: false, focusable: false, selected: selection?.kind === 'team' && selection.id === team.id, data: { team, pending, onPick: (id: string) => setSelection({ kind: 'team', id }) } }]
+      // A waiting approval floats under its terminal as its own card; where the user dragged it is kept while it lives
+      const cards: Node<CanvasNodeData>[] = view.channel.nodes.flatMap((n) => {
+        const approval = view.runtime[n.id]?.approval
+        if (!approval) return []
+        const id = `approval:${n.id}`
+        const old = prev.find((p) => p.id === id)
+        const width = Math.min(520, Math.max(340, n.size.width - 80))
+        return [{
+          id,
+          type: 'approval',
+          position: old ? old.position : { x: n.position.x + 40, y: n.position.y + n.size.height + 22 },
+          style: { width },
+          zIndex: 5,
+          selectable: false,
+          data: { nodeId: n.id, channelId: view.channel.id, name: `${agentName(n.agent)} · ${n.id.slice(0, 4)}`, approval, stopped: view.stop.requested, call, onFocusTerminal: focusTerminal }
+        }]
       })
-      return [...frames, ...terminals]
+      return [...terminals, ...cards]
     })
-  }, [view, selection, agentName, agents, zoom, call])
+  }, [view, selection, agentName, markOfAgent, zoom, call, focusTerminal])
 
-  const edges: Edge[] = useMemo(
-    () => [
-      ...(view?.channel.edges || []).map((e) => ({
+  const edges: Edge[] = useMemo(() => {
+    if (!view) return []
+    const ids = new Set(view.channel.nodes.map((n) => n.id))
+    const xOf = new Map(view.channel.nodes.map((n) => [n.id, n.position.x]))
+    // One line per pair of agents that have talked; it glows while a message between them is still on its way
+    const flows = new Map<string, { a: string; b: string; active: boolean }>()
+    for (const m of view.messages) {
+      if (!ids.has(m.from) || !ids.has(m.to)) continue
+      const [a, b] = m.from < m.to ? [m.from, m.to] : [m.to, m.from]
+      const f = flows.get(`${a}:${b}`) || { a: m.from, b: m.to, active: false }
+      if (m.state === 'pending-approval' || m.state === 'queued' || m.state === 'notified') {
+        f.active = true
+        f.a = m.from
+        f.b = m.to
+      }
+      flows.set(`${a}:${b}`, f)
+    }
+    return [
+      ...view.channel.edges.map((e) => ({
         id: e.id,
         source: e.from,
         target: e.to,
@@ -211,13 +273,12 @@ function CanvasShell(): JSX.Element {
         selected: selection?.kind === 'edge' && selection.id === e.id,
         className: 'cv-edge'
       })),
-      // Lead to member: the routes the team's messages may take
-      ...(view?.teams || []).flatMap((team) =>
-        team.memberIds.filter((m) => m !== team.leadId).map((m) => ({ id: `team:${team.id}:${m}`, source: team.leadId, target: m, selectable: false, focusable: false, animated: team.status === 'running', className: 'cv-edge-team' }))
-      )
-    ],
-    [view, recentEdge, selection, t]
-  )
+      ...[...flows.entries()].map(([k, f]) => {
+        const rev = (xOf.get(f.a) ?? 0) > (xOf.get(f.b) ?? 0)
+        return { id: `flow:${k}`, source: rev ? f.b : f.a, target: rev ? f.a : f.b, selectable: false, focusable: false, animated: f.active, className: `cv-edge-flow${f.active ? ' active' : ''}${rev ? ' rev' : ''}` }
+      })
+    ]
+  }, [view, recentEdge, selection, t])
 
   const onNodesChange = useCallback((changes: NodeChange<Node<CanvasNodeData>>[]) => {
     for (const c of changes) {
@@ -239,21 +300,34 @@ function CanvasShell(): JSX.Element {
 
   const addNode = async (agent: string, position?: { x: number; y: number }): Promise<void> => {
     if (!view) return
-    const pos = position || flow.screenToFlowPosition({ x: window.innerWidth / 2 - NODE_SIZE.width / 2, y: window.innerHeight / 2 - NODE_SIZE.height / 2 })
+    // A free spot: next to the nodes already there, or where the user dropped it
+    const count = view.channel.nodes.length
+    const pos = position || { x: (count % 3) * (NODE_SIZE.width + 60), y: Math.floor(count / 3) * (NODE_SIZE.height + 140) }
     const n = await call('node.create', { channelId: view.channel.id, agent, workspace: inRoot ? 'root' : 'worktree', position: { x: Math.round(pos.x), y: Math.round(pos.y) }, size: NODE_SIZE })
-    if (n) setSelection({ kind: 'node', id: n.id })
+    if (n) {
+      setSelection({ kind: 'node', id: n.id })
+      if (!position) window.setTimeout(() => void flow.fitView({ duration: 300, maxZoom: 1 }), 200)
+    }
   }
 
   const onConnect = async (c: Connection): Promise<void> => {
-    if (!view || !c.source || !c.target || c.source === c.target) return
+    if (!view || !c.source || !c.target || c.source === c.target || c.target.startsWith('approval:')) return
     const edge = await call('handoff.create', { channelId: view.channel.id, from: c.source, to: c.target, note: '' })
     if (!edge) return
     setSelection({ kind: 'edge', id: edge.id })
+    setTab('details')
     // 流動光點只在交接後幾秒播放（§3.5）
     setRecentEdge(edge.id)
     window.setTimeout(() => setRecentEdge((x) => (x === edge.id ? null : x)), 4000)
   }
 
+  const nodeName = useCallback((id: string): string => {
+    const n = view?.channel.nodes.find((x) => x.id === id)
+    return n ? `${agentName(n.agent)} · ${n.id.slice(0, 4)}` : id.slice(0, 4)
+  }, [view, agentName])
+  const markOfNode = useCallback((id: string): MarkId => markOfAgent(view?.channel.nodes.find((x) => x.id === id)?.agent || ''), [view, markOfAgent])
+
+  /** Show a node on the canvas */
   const pickNode = (id: string): void => {
     setSelection({ kind: 'node', id })
     setMode('canvas')
@@ -261,12 +335,17 @@ function CanvasShell(): JSX.Element {
     if (n) void flow.setCenter(n.position.x + n.size.width / 2, n.position.y + n.size.height / 2, { zoom: 1, duration: 300 })
   }
 
-  const nodeName = (id: string): string => {
-    const n = view?.channel.nodes.find((x) => x.id === id)
-    return n ? `${agentName(n.agent)} · ${n.id.slice(0, 4)}` : id.slice(0, 4)
+  /** Take Over: stop what the agent is doing, once, and hand the keyboard to the user in its terminal */
+  const takeOver = (id: string): void => {
+    const rt = view?.runtime[id]
+    // Never while a question is on screen: Esc would answer it with "no"
+    if (rt?.status === 'running' && rt.ptyId && rt.busy && !rt.approval) window.api.pty.write(rt.ptyId, '\x1b')
+    pickNode(id)
+    focusTerminal(id)
   }
 
   const stop = view?.stop
+  const group = view?.teams[0]
   // Everything that waits on the user in this channel: CLI approvals, held messages, merge requests
   const pendingCount = view ? Object.values(view.runtime).filter((r) => r.approval).length + view.relays.length + view.mergeRequests.length : 0
   const createChannel = async (): Promise<void> => {
@@ -276,9 +355,22 @@ function CanvasShell(): JSX.Element {
     if (v) setChannelId(v.channel.id)
   }
 
+  const q = query.trim().toLowerCase()
+  const shownChannels = channels.filter((c) => !q || c.name.toLowerCase().includes(q))
+  const shownAgents = agents.filter((a) => !q || a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q))
+  const botState = (agent: string): { state: BotState; nodes: CanvasNode[] } => {
+    const mine = view?.channel.nodes.filter((n) => n.agent === agent) || []
+    if (mine.length === 0) return { state: 'offline', nodes: mine }
+    const rts = mine.map((n) => view?.runtime[n.id])
+    const state: BotState = rts.some((r) => r?.approval) ? 'waiting' : rts.some((r) => r?.status === 'running' && r.busy) ? 'active' : rts.some((r) => r?.status === 'running') ? 'idle' : 'ended'
+    return { state, nodes: mine }
+  }
+  const selectedNode = selection?.kind === 'node' ? selection.id : null
+
   return (
     <div className="cv-root">
       <div className="cv-topbar">
+        <span className="cv-spacer" />
         <div className="segmented">
           {(['developer', 'vibe', 'cowork'] as const).map((m) => (
             <button key={m} className={uiMode === m ? 'on' : ''} onClick={() => setUiMode(m)}>
@@ -287,37 +379,46 @@ function CanvasShell(): JSX.Element {
           ))}
         </div>
         <div className="segmented">
+          <button className={mode === 'cards' ? 'on' : ''} onClick={() => setMode('cards')}>{t('canvas.cards')}</button>
           <button className={mode === 'canvas' ? 'on' : ''} onClick={() => setMode('canvas')}>{t('canvas.canvas')}</button>
-          <button className={mode === 'feed' ? 'on' : ''} onClick={() => setMode('feed')}>{t('canvas.feed')}</button>
         </div>
         <span className="cv-spacer" />
+        {error && <span className="cv-error" role="alert">{error}</span>}
         {pendingCount > 0 && (
-          <button className="cv-btn primary" onClick={() => setMode('feed')}>
+          <button className="cv-pending" onClick={() => setTab('chat')}>
             {t('canvas.pending', { n: pendingCount })}
           </button>
         )}
-        {error && <span className="cv-error" role="alert">{error}</span>}
+        <span className="cv-proxy" title={t('canvas.proxyHint')}>
+          <span className="cv-proxy-dot" /> Proxy: {proxy}
+        </span>
         {stop?.requested ? (
           <>
             <span className="cv-stop-note" title={t('canvas.stopRequestedHint')}>{t('canvas.stopRequested')}</span>
-            <button className="cv-btn danger" onClick={() => window.confirm(t('canvas.killAllConfirm')) && void call('stop.killAll')}>{t('canvas.killAll')}</button>
+            <button className="cv-break" onClick={() => window.confirm(t('canvas.killAllConfirm')) && void call('stop.killAll')}>{t('canvas.killAll')}</button>
             <button className="cv-btn" onClick={() => void call('stop.clear')}>{t('canvas.clearStop')}</button>
           </>
         ) : (
-          <button className="cv-btn danger" title={t('canvas.stopHint')} onClick={() => void call('stop')} disabled={!view}>
-            ■ {t('canvas.stop')}
+          <button className="cv-break" title={t('canvas.stopHint')} onClick={() => void call('stop')} disabled={!view}>
+            <span aria-hidden="true">⚠</span> {t('canvas.emergencyBreak')}
           </button>
         )}
       </div>
 
       <div className="cv-body">
         <aside className="cv-left">
+          <label className="cv-search">
+            <span aria-hidden="true">⌕</span>
+            <input ref={search} value={query} placeholder={t('canvas.search')} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} />
+            <kbd>Ctrl K</kbd>
+          </label>
+
           <div className="cv-section-head">
             <span>{t('canvas.channels')}</span>
             <button className="cv-icon-btn" title={t('canvas.newChannel')} onClick={createChannel}>＋</button>
           </div>
           <div className="cv-list">
-            {channels.map((c) => (
+            {shownChannels.map((c) => (
               <button
                 key={c.id}
                 className={`cv-list-item ${c.id === channelId ? 'on' : ''}`}
@@ -327,37 +428,56 @@ function CanvasShell(): JSX.Element {
                   if (name?.trim()) await call('channel.rename', { channelId: c.id, name })
                 }}
               >
-                <span># {c.name}</span>
+                <span className="cv-hash">#</span>
+                <span className="cv-list-name">{c.name}</span>
+                {c.nodeCount > 0 && <span className="cv-list-count">{c.nodeCount}</span>}
                 {c.pendingApprovals > 0 && <span className="cv-badge">{c.pendingApprovals}</span>}
               </button>
             ))}
           </div>
+
           <div className="cv-section-head">
-            <span>{t('canvas.agents')}</span>
+            <span>{t('canvas.botRoster')}</span>
+          </div>
+          <div className="cv-list">
+            {shownAgents.map((a) => {
+              const { state, nodes: mine } = botState(a.id)
+              const leads = mine.some((n) => n.id === group?.leadId)
+              return (
+                <div
+                  key={a.id}
+                  className={`cv-bot st-${state}`}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('application/x-canvas-agent', a.id)}
+                  // 實際會執行的指令：yaml 不能拿名稱偽裝（§2.3）
+                  title={`${[a.command, ...(a.args || [])].join(' ')}\n${t('canvas.agentHint')}`}
+                >
+                  <button className="cv-bot-main" disabled={!view} onClick={() => (mine.length ? pickNode(mine[0].id) : !stop?.requested && void addNode(a.id))}>
+                    <span className="cv-bot-avatar">
+                      <AgentMark agent={markOf(a.cli || a.id)} size={20} />
+                    </span>
+                    <span className="cv-bot-text">
+                      <span className="cv-bot-name">
+                        {a.name}
+                        {mine.length > 1 && <span className="cv-muted"> ×{mine.length}</span>}
+                        {leads && <span className="cv-bot-lead" title={t('canvas.role_lead')}> ★</span>}
+                      </span>
+                      <span className="cv-bot-state">{t(`canvas.bot_${state}`)}</span>
+                    </span>
+                    <span className={`cv-bot-dot st-${state}`} />
+                  </button>
+                  {mine.length > 0 && !leads && (
+                    <button className="cv-icon-btn" title={t('canvas.makeLead')} onClick={() => view && void call('team.update', { channelId: view.channel.id, leadId: mine[0].id })}>☆</button>
+                  )}
+                  <button className="cv-icon-btn" onClick={() => void addNode(a.id)} disabled={!view || !!stop?.requested} title={t('canvas.addNode')}>＋</button>
+                </div>
+              )
+            })}
           </div>
           <label className="cv-root-toggle" title={t('canvas.rootHint')}>
             <input type="checkbox" checked={inRoot} onChange={(e) => setInRoot(e.target.checked)} />
             {t('canvas.inRoot')}
           </label>
-          <div className="cv-list">
-            {agents.map((a) => (
-              <div
-                key={a.id}
-                className="cv-agent"
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('application/x-canvas-agent', a.id)}
-                title={t('canvas.agentHint')}
-              >
-                <AgentMark agent={markOf(a.cli || a.id)} size={16} />
-                <span className="cv-agent-main">
-                  <span>{a.name}</span>
-                  {/* 實際會執行的指令：yaml 不能拿名稱偽裝（§2.3） */}
-                  <span className="cv-agent-cmd">{[a.command, ...(a.args || [])].join(' ')}</span>
-                </span>
-                <button className="cv-icon-btn" onClick={() => void addNode(a.id)} disabled={!view || !!stop?.requested} title={t('canvas.addNode')}>＋</button>
-              </div>
-            ))}
-          </div>
         </aside>
 
         <main
@@ -369,7 +489,7 @@ function CanvasShell(): JSX.Element {
             const agent = e.dataTransfer.getData('application/x-canvas-agent')
             if (!agent) return
             e.preventDefault()
-            void addNode(agent, flow.screenToFlowPosition({ x: e.clientX, y: e.clientY }))
+            void addNode(agent, mode === 'canvas' ? flow.screenToFlowPosition({ x: e.clientX, y: e.clientY }) : undefined)
           }}
         >
           {mode === 'canvas' ? (
@@ -381,7 +501,11 @@ function CanvasShell(): JSX.Element {
               onNodeDragStop={(_, n) => saveLayout(n)}
               onConnect={(c) => void onConnect(c)}
               onNodeClick={(_, n) => n.type === 'terminal' && setSelection({ kind: 'node', id: n.id })}
-              onEdgeClick={(_, e) => !e.id.startsWith('team:') && setSelection({ kind: 'edge', id: e.id })}
+              onEdgeClick={(_, e) => {
+                if (e.id.startsWith('flow:')) return
+                setSelection({ kind: 'edge', id: e.id })
+                setTab('details')
+              }}
               onPaneClick={() => setSelection(null)}
               onMove={(_, vp) => setZoom(vp.zoom)}
               // 離開可視範圍的節點卸下呈現（退訂畫面資料），回來時由快照接回；行程不受影響（§3.8）
@@ -397,37 +521,52 @@ function CanvasShell(): JSX.Element {
             </ReactFlow>
           ) : (
             view && (
-              <TeamFeed
+              <CardsView
                 view={view}
                 call={call}
+                selectedNode={selectedNode}
                 nodeName={nodeName}
-                onPick={pickNode}
-                timeline={<FeedView events={view.channel.events} nodeName={nodeName} teamName={(id) => view.teams.find((x) => x.id === id)?.name || id} onPick={pickNode} />}
+                markOfNode={markOfNode}
+                onSelect={(id) => setSelection({ kind: 'node', id })}
+                onShow={pickNode}
+                onTakeOver={takeOver}
+                timeline={<FeedView events={view.channel.events} nodeName={nodeName} onPick={pickNode} />}
               />
             )
           )}
           {view && view.channel.nodes.length === 0 && mode === 'canvas' && <div className="cv-empty">{t('canvas.empty')}</div>}
         </main>
 
-        <Inspector view={view} selection={selection} call={call} agentName={agentName} nodeName={nodeName} onPickTeam={(id) => setSelection({ kind: 'team', id })} />
+        <div className="cv-rightwrap">
+          <div className="cv-right-head">
+            <span className="cv-right-title">{t('canvas.collab')}</span>
+            <div className="segmented small">
+              <button className={tab === 'chat' ? 'on' : ''} onClick={() => setTab('chat')}>{t('canvas.tabChat')}</button>
+              <button className={tab === 'details' ? 'on' : ''} onClick={() => setTab('details')}>{t('canvas.tabDetails')}</button>
+            </div>
+          </div>
+          {tab === 'chat' && view ? (
+            <ChatPanel view={view} call={call} selectedNode={selectedNode} nodeName={nodeName} markOfNode={markOfNode} onPickNode={pickNode} onTakeOver={takeOver} />
+          ) : (
+            <Inspector view={view} selection={selection} call={call} agentName={agentName} nodeName={nodeName} />
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
-function FeedView({ events, nodeName, teamName, onPick }: { events: ChannelEvent[]; nodeName: (id: string) => string; teamName: (id: string) => string; onPick: (node: string) => void }): JSX.Element {
+function FeedView({ events, nodeName, onPick }: { events: ChannelEvent[]; nodeName: (id: string) => string; onPick: (node: string) => void }): JSX.Element {
   const { t } = useTranslation()
-  const who = (id: string): string => (id === 'app' ? 'Agent Workbench' : id === 'user' ? '—' : nodeName(id))
+  const who = (id: string): string => (id === 'app' ? 'Agent Workbench' : id === 'user' ? t('canvas.you') : nodeName(id))
   const text = (e: ChannelEvent): string => {
     switch (e.t) {
-      case 'team-started':
       case 'team-resumed':
-      case 'team-done':
-        return t(`canvas.ev_${e.t.replace('-', '_')}`, { team: teamName(e.team) })
+        return t('canvas.ev_team_resumed')
       case 'team-paused':
-        return t('canvas.ev_team_paused', { team: teamName(e.team), reason: e.reason })
+        return t('canvas.ev_team_paused', { reason: e.reason })
       case 'message':
-        return t(e.held ? 'canvas.ev_message_held' : 'canvas.ev_message', { from: who(e.from), to: who(e.to), kind: e.kind })
+        return t(e.held ? 'canvas.ev_message_held' : 'canvas.ev_message', { from: who(e.from), to: who(e.to), kind: t(`canvas.kind_${e.kind}`) })
       case 'task':
         return t('canvas.ev_task', { node: nodeName(e.node), status: t(`canvas.task_${e.status}`) })
       case 'team-merge':
@@ -447,7 +586,7 @@ function FeedView({ events, nodeName, teamName, onPick }: { events: ChannelEvent
         return t(`canvas.ev_${e.t.replace('-', '_')}`)
     }
   }
-  const nodeOf = (e: ChannelEvent): string | null => ('node' in e ? e.node : 'to' in e ? e.to : null)
+  const nodeOf = (e: ChannelEvent): string | null => ('node' in e ? e.node : 'to' in e && e.to !== 'user' ? e.to : null)
   return (
     <div className="cv-feed">
       {events.length === 0 && <p className="cv-muted">{t('canvas.noEvents')}</p>}

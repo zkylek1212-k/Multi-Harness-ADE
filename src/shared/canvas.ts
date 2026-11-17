@@ -13,7 +13,7 @@ export interface Channel {
   edges: HandoffEdge[]
   /** Newest last, truncated by the backend; Feed and phone read this */
   events: ChannelEvent[]
-  /** Teams (cowork-team-implement.md §2); absent in files from before teams */
+  /** The channel's group: at most one entry, kept by the backend (id "main"). A channel is a group of agents. */
   teams?: Team[]
   /** What each node works on, keyed by node id; set by assign_task, report or the user */
   tasks?: Record<string, NodeTask>
@@ -21,17 +21,21 @@ export interface Channel {
 
 export type RelayMode = 'approve' | 'lead-auto' | 'auto'
 
+/** A channel's group. Its members are the channel's nodes; the backend keeps it in step, nothing creates or starts it. */
 export interface Team {
+  /** Always "main" */
   id: string
+  /** The channel's name */
   name: string
+  /** Unused since the channel became the group */
   goal: string
-  /** One of memberIds */
+  /** One of memberIds; the first agent node unless the user picked another */
   leadId: string
-  /** Includes the lead; a node is in at most one team */
+  /** Every node of the channel */
   memberIds: string[]
   /** approve: every agent message waits for the user; lead-auto: only members' do; auto: none do, and the lead merges members into its own worktree itself */
   relay: RelayMode
-  status: 'draft' | 'running' | 'paused' | 'done' | 'failed'
+  status: 'running' | 'paused'
   /** Why it stopped running: the user, the stop, or a cap (only in lead-auto and auto) */
   pausedReason?: string
   bounds: { x: number; y: number; width: number; height: number }
@@ -45,14 +49,16 @@ export interface NodeTask {
   status: 'idle' | 'working' | 'blocked' | 'done' | 'failed'
   summary?: string
   updatedAt: number
-  source: 'assign' | 'report' | 'user'
+  /** Who gave the task: the lead (reports go back to the lead) or the user (reports go to the chat) */
+  source: 'assign' | 'user'
 }
 
 export interface TeamMessage {
   id: string
   teamId: string
-  /** A node id, or 'app' / 'user' */
+  /** A node id, 'user' (the chat box) or 'app' */
   from: string
+  /** A node id, or 'user' for an agent's report into the chat */
   to: string
   kind: 'task' | 'message' | 'report' | 'system'
   /** Untrusted when from an agent; never shown as HTML */
@@ -97,9 +103,8 @@ export type ChannelEvent =
   | { t: 'handoff'; at: number; edge: string; from: string; to: string; text: string }
   | { t: 'merged' | 'discarded'; at: number; node: string }
   | { t: 'stop-requested' | 'stop-cleared'; at: number }
-  | { t: 'team-started' | 'team-resumed'; at: number; team: string }
+  | { t: 'team-resumed'; at: number; team: string }
   | { t: 'team-paused'; at: number; team: string; reason: string }
-  | { t: 'team-done'; at: number; team: string; by: 'lead' | 'user' }
   /** Who, to whom and how long; the text lives in the messages file only */
   | { t: 'message'; at: number; team: string; id: string; from: string; to: string; kind: TeamMessage['kind']; len: number; held: boolean }
   | { t: 'relay'; at: number; id: string; decision: 'approved' | 'rejected'; via?: 'phone' }
@@ -279,18 +284,17 @@ export interface CanvasOps {
   'stop.killAll': { req: void; res: { failed: { channelId: string; nodeId: string; error: string }[] } }
   'stop.clear': { req: void; res: StopState }
   'legacy.inventory': { req: void; res: LegacyWorktree[] }
-  // ---------- teams (cowork-team-implement.md) ----------
-  'team.create': { req: { channelId: string; name: string; goal: string; leadId: string; memberIds: string[]; relay: RelayMode; bounds: Team['bounds'] }; res: Team }
-  /** Members, lead and goal only while not running; name, relay, limits and bounds any time */
-  'team.update': { req: { channelId: string; teamId: string; name?: string; goal?: string; leadId?: string; memberIds?: string[]; relay?: RelayMode; limits?: Team['limits']; bounds?: Team['bounds'] }; res: void }
-  'team.delete': { req: { channelId: string; teamId: string }; res: void }
-  /** Sends the kickoff to the lead the first time (or after done); refused while stopped */
-  'team.start': { req: { channelId: string; teamId: string }; res: void }
-  'team.resume': { req: { channelId: string; teamId: string }; res: void }
-  'team.pause': { req: { channelId: string; teamId: string }; res: void }
-  'team.finish': { req: { channelId: string; teamId: string }; res: void }
-  /** Newest first, at most 200; teamId empty = the whole channel */
-  'team.messages': { req: { channelId: string; teamId: string }; res: TeamMessage[] }
+  /** The last lines on a node's screen, for the Take Over panel */
+  'node.screen': { req: { channelId: string; nodeId: string }; res: string }
+  // ---------- groups (cowork-team-implement.md): the channel is the group ----------
+  /** The user's own message: typed into the agent's terminal and sent. `to` defaults to the lead. Resumes a paused group. */
+  'chat.send': { req: { channelId: string; to?: string; text: string }; res: void }
+  /** Who leads, how agent messages are relayed, and the caps */
+  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits'] }; res: void }
+  'team.resume': { req: { channelId: string }; res: void }
+  'team.pause': { req: { channelId: string }; res: void }
+  /** Newest first, at most 200 */
+  'team.messages': { req: { channelId: string }; res: TeamMessage[] }
   'relay.approve': { req: { channelId: string; messageId: string }; res: void }
   'relay.reject': { req: { channelId: string; messageId: string }; res: void }
   'teammerge.approve': { req: { channelId: string; requestId: string }; res: void }

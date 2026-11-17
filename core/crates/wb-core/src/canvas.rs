@@ -194,6 +194,8 @@ struct RepoState {
     nudged: HashMap<String, (f64, u8)>,
     /// A lead's merge requests waiting for the user
     merge_reqs: HashMap<String, team::MergeReq>,
+    /// Session generations that already got the group brief with a chat message
+    briefed: HashSet<String>,
 }
 
 struct Repo {
@@ -250,7 +252,11 @@ impl Repo {
         let ids: Vec<String> = st.channels.keys().cloned().collect();
         for id in ids {
             let m = team::load_messages(self, &id);
-            st.msgs.insert(id, m);
+            st.msgs.insert(id.clone(), m);
+            // Channels from before groups, or from the short-lived explicit teams, become one group each
+            if let Some(c) = st.channels.get_mut(&id) {
+                team::sync_group(c);
+            }
         }
         // No process survives an app restart: every node starts as ended, and a lost worktree shows as an error
         for c in st.channels.values() {
@@ -648,6 +654,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 let mut st = repo.st.lock().unwrap();
                 let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
                 c.name = name;
+                team::sync_group(c);
                 repo.save(c)?;
             }
             emit(core, &repo, &ch);
@@ -693,6 +700,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 }
                 // The record comes first, so a failure below still leaves something to inspect and retry
                 c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, position, size });
+                team::sync_group(c);
                 repo.save(c)?;
                 st.rt.insert(key(&ch, &id), NodeRt { status: "creating", ..Default::default() });
             }
@@ -893,6 +901,12 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             wt::discard(&repo.root, &t).map_err(git_err)?;
             remove_node(core, &repo, &ch, &nd, Some("discarded"))
         }
+        // The last lines on a node's screen, for the Take Over panel; never sent to a phone
+        "node.screen" if origin == Origin::Desktop => {
+            let pty = repo.st.lock().unwrap().rt.get(&key(&ch, &nd)).and_then(|r| r.pty_id.clone());
+            // The rows below the cursor are blank: the tail is of what is written, not of the whole screen
+            Ok(json!(pty.and_then(|p| core.pty_screen_text(&p)).map(|s| screen_tail(s.trim_end())).unwrap_or_default()))
+        }
         "node.approve" | "node.reject" => answer(core, &repo, &ch, &nd, req, op == "node.approve", origin),
         "node.message" => {
             let text = s(req, "text");
@@ -983,7 +997,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let list = wt::legacy_inventory(&repo.root, &core.data_dir.join("cowork"), &raw).map_err(git_err)?;
             Ok(serde_json::to_value(list).unwrap())
         }
-        op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") => team::dispatch(core, &repo, op, req, origin),
+        op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") || op == "chat.send" => team::dispatch(core, &repo, op, req, origin),
         _ => Err(err("invalid", format!("Unknown canvas operation: {}", js_prefix(op, 40)))),
     }
 }

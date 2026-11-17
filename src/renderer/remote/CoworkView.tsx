@@ -227,7 +227,7 @@ export default function CoworkView({
                       </div>
                     ))}
                     {tm.status === 'running' && (
-                      <button className="btn" disabled={busy} onClick={() => run(() => conn.canvas(windowId, 'team.pause', { channelId: c.id, teamId: tm.id }))}>{t('cv_teamPause')}</button>
+                      <button className="btn" disabled={busy} onClick={() => run(() => conn.canvas(windowId, 'team.pause', { channelId: c.id }))}>{t('cv_teamPause')}</button>
                     )}
                   </div>
                 ))}

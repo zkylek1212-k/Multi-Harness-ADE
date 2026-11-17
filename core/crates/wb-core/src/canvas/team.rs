@@ -156,13 +156,14 @@ fn limit_hit(t: &Team, msgs: &[Msg], from: &str, to: &str, now: f64) -> Option<S
     if t.message_count >= t.limits.max_messages {
         return Some(format!("message limit reached ({})", t.limits.max_messages));
     }
-    let recent = msgs.iter().filter(|m| m.team_id == t.id && m.from == from && now - m.at < 10.0 * 60_000.0).count();
+    // Only what goes to another agent: a report to the user is not relayed anywhere
+    let recent = msgs.iter().filter(|m| m.team_id == t.id && m.from == from && m.to != "user" && now - m.at < 10.0 * 60_000.0).count();
     if recent as u32 >= t.limits.per_member_per10_min {
         return Some(format!("{from} sent {recent} messages in 10 minutes"));
     }
     // Ping-pong: the last messages of the team all between the same two nodes, with no report in between
     let pair = |m: &Msg| (m.from == from && m.to == to) || (m.from == to && m.to == from);
-    let tail: Vec<&Msg> = msgs.iter().rev().filter(|m| m.team_id == t.id && m.kind != "system").take(PING_PONG - 1).collect();
+    let tail: Vec<&Msg> = msgs.iter().rev().filter(|m| m.team_id == t.id && m.kind != "system" && m.to != "user" && m.from != "user").take(PING_PONG - 1).collect();
     if tail.len() == PING_PONG - 1 && tail.iter().all(|m| pair(m) && m.kind != "report") {
         return Some(format!("{from} and {to} keep messaging each other without a report"));
     }
@@ -176,19 +177,68 @@ fn display(c: &Channel, id: &str) -> String {
     }
 }
 
-fn kickoff(c: &Channel, t: &Team) -> String {
-    let members: Vec<String> = t.member_ids.iter().filter(|m| **m != t.lead_id).map(|m| format!("- {}", display(c, m))).collect();
-    format!(
-        "You are the lead of the Agent Workbench team \"{}\".\nGoal:\n{}\n\nMembers:\n{}\n\nHow to work:\n\
-- Split the goal into tasks and give each member one with assign_task(member, title, details). Members work in their own git worktrees and commit there.\n\
-- Members answer with report(); their reports reach you as new messages. Use send_message(to, text) for anything else.\n\
-- get_member_changes(member) shows what a member committed. request_merge(member) brings a member's branch into your own worktree; commit your own work first.\n\
-- You may work in your own worktree too.\n\
-- When the goal is done, call report(status=\"done\", summary=...).",
-        t.name,
-        t.goal,
-        if members.is_empty() { "- (none)".into() } else { members.join("\n") }
-    )
+/// What the app puts in front of the user's first chat message to a session: who the node is in the group and which
+/// tools it has. App-written; the names in it are node ids and agent ids.
+fn brief(c: &Channel, t: &Team, node: &str) -> String {
+    let others: Vec<String> = t.member_ids.iter().filter(|m| *m != node).map(|m| display(c, m)).collect();
+    let tell = "Tell the user the outcome with the report tool of the workbench MCP server (status, summary); it shows in the group chat.";
+    if others.is_empty() {
+        format!("[Agent Workbench, group \"{}\"] {tell}", t.name)
+    } else if t.lead_id == node {
+        format!(
+            "[Agent Workbench, group \"{}\"] You lead this group. Members: {}. Workbench MCP tools: assign_task(member, title, details) hands out work; \
+members work in their own git worktrees, commit there and report back to you as new messages; get_member_changes(member) shows their commits; \
+request_merge(member) brings them into your worktree (commit your own work first). {tell}",
+            t.name,
+            others.join(", ")
+        )
+    } else {
+        format!("[Agent Workbench, group \"{}\"] You are a member; the lead is {}. {tell}", t.name, display(c, &t.lead_id))
+    }
+}
+
+/// The one group of a channel
+pub(super) const GROUP: &str = "main";
+
+/// The channel is the group (the user's "open a group and add bots"): every node is a member and one of them
+/// leads. Nothing to create or start. Returns whether the stored teams changed.
+pub(super) fn sync_group(c: &mut Channel) -> bool {
+    let before = serde_json::to_string(&c.teams).unwrap_or_default();
+    let ids: Vec<String> = c.nodes.iter().map(|n| n.id.clone()).collect();
+    if ids.is_empty() {
+        c.teams.clear();
+    } else {
+        c.teams.truncate(1);
+        if c.teams.is_empty() {
+            c.teams.push(Team {
+                id: GROUP.into(),
+                name: String::new(),
+                goal: String::new(),
+                lead_id: String::new(),
+                member_ids: vec![],
+                relay: "approve".into(),
+                status: "running".into(),
+                paused_reason: None,
+                bounds: Bounds { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                limits: Limits::default(),
+                started_at: Some(now_ms()),
+                message_count: 0,
+            });
+        }
+        // An agent leads when there is one; a plain shell cannot use the tools
+        let first_agent = c.nodes.iter().find(|n| BUILTIN.contains(&n.agent.as_str())).map(|n| n.id.clone());
+        let name = c.name.clone();
+        let t = &mut c.teams[0];
+        t.name = name;
+        t.member_ids = ids;
+        if !t.member_ids.contains(&t.lead_id) {
+            t.lead_id = first_agent.unwrap_or_else(|| t.member_ids[0].clone());
+        }
+        if t.status != "paused" {
+            t.status = "running".into();
+        }
+    }
+    before != serde_json::to_string(&c.teams).unwrap_or_default()
 }
 
 fn task_text(title: &str, details: &str) -> String {
@@ -242,20 +292,24 @@ pub(super) fn pause_all(c: &mut Channel, reason: &str) {
     }
 }
 
-/// A node leaving the canvas leaves its team; a team without its lead stops
+/// A node leaving the canvas leaves the group; if it led, the next agent does
 pub(super) fn forget_node(c: &mut Channel, node: &str) {
     c.tasks.remove(node);
-    for t in c.teams.iter_mut() {
-        t.member_ids.retain(|m| m != node);
-        if t.lead_id == node {
-            t.lead_id = t.member_ids.first().cloned().unwrap_or_default();
-            if t.status == "running" {
-                t.status = "paused".into();
-                t.paused_reason = Some("the lead left the canvas".into());
-            }
-        }
+    sync_group(c);
+}
+
+/// A message that is only for the chat: an agent's report to the user. Never held, never counted.
+fn note(st: &mut RepoState, repo: &Repo, ch: &str, from: &str, kind: &str, text: &str) {
+    let now = now_ms();
+    let msgs = st.msgs.entry(ch.to_string()).or_default();
+    let id = short_id();
+    msgs.push(Msg { id: id.clone(), team_id: GROUP.into(), from: from.into(), to: "user".into(), kind: kind.into(), text: js_prefix(&sanitize_text(text, true), MAX_TEXT), at: now, state: "read".into() });
+    let len = msgs.last().map(|m| m.text.len()).unwrap_or(0);
+    save_messages(repo, ch, msgs);
+    if let Some(c) = st.channels.get_mut(ch) {
+        push_event(c, json!({ "t": "message", "at": now, "team": GROUP, "id": id, "from": from, "to": "user", "kind": kind, "len": len, "held": false }));
+        let _ = repo.save(c);
     }
-    c.teams.retain(|t| !t.member_ids.is_empty());
 }
 
 /// Queues one message, or holds it for the user. Returns what the sender is told.
@@ -289,10 +343,13 @@ fn post(st: &mut RepoState, repo: &Repo, ch: &str, team: &str, from: &str, to: &
     Ok(if hold { format!("Message {id} is waiting for the user's approval; you will hear back if it is rejected.") } else { format!("Message {id} queued for {to}.") })
 }
 
-/// Pastes the notice into every idle recipient with mail. Call it after any queueing and whenever a CLI goes idle.
+/// Hands waiting mail to every recipient whose CLI is idle. Call it after any queueing and whenever a CLI goes idle.
+/// The user's own chat messages are pasted as they are, like typing them; anything from another agent only gets a
+/// fixed notice line, and its content comes back through read_inbox.
 pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
     let now = now_ms();
-    let mut sends: Vec<(String, String, String, usize, String)> = Vec::new();
+    // (node, pty, generation, text to paste, whether it is the user's own multi-line text)
+    let mut sends: Vec<(String, String, String, String, bool)> = Vec::new();
     {
         let mut st = repo.st.lock().unwrap();
         let st = &mut *st;
@@ -300,11 +357,11 @@ pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
             return;
         }
         let Some(c) = st.channels.get(ch) else { return };
-        let running: HashSet<&str> = c.teams.iter().filter(|t| t.status == "running").map(|t| t.id.as_str()).collect();
+        let Some(team) = c.teams.first().filter(|t| t.status == "running") else { return };
         let msgs = st.msgs.entry(ch.to_string()).or_default();
         let mut by_node: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (i, m) in msgs.iter().enumerate() {
-            if running.contains(m.team_id.as_str()) && matches!(m.state.as_str(), "queued" | "notified") {
+            if matches!(m.state.as_str(), "queued" | "notified") {
                 by_node.entry(m.to.clone()).or_default().push(i);
             }
         }
@@ -314,31 +371,54 @@ pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
             if rt_view(core, rt, false)["inputReady"] != json!(true) {
                 continue;
             }
+            let (Some(pty), Some(generation)) = (rt.pty_id.clone(), rt.generation.clone()) else { continue };
+            let mine: Vec<usize> = idx.iter().copied().filter(|i| msgs[*i].from == "user").collect();
+            if !mine.is_empty() {
+                // The user's words go in first and on their own; other mail waits for the next idle moment
+                let mut text = mine.iter().map(|i| msgs[*i].text.clone()).collect::<Vec<_>>().join("\n\n");
+                // Sessions with the tools are told once who they are in the group
+                if rt.hook_token.is_some() && st.briefed.insert(generation.clone()) {
+                    text = format!("{}\n\n{text}", brief(c, team, &node));
+                }
+                for i in &mine {
+                    msgs[*i].state = "read".into();
+                }
+                sends.push((node, pty, generation, text, true));
+                continue;
+            }
             let fresh = idx.iter().any(|i| msgs[*i].state == "queued");
             let (last, count) = st.nudged.get(&k).copied().unwrap_or((0.0, 0));
             if !fresh && (now - last < RENUDGE_MS || count >= MAX_NUDGES) {
                 continue;
             }
-            let (Some(pty), Some(generation)) = (rt.pty_id.clone(), rt.generation.clone()) else { continue };
             let senders: Vec<String> = idx.iter().map(|i| msgs[*i].from.clone()).collect::<HashSet<_>>().into_iter().collect();
             let from = senders.iter().map(|s| if s == "app" { "Agent Workbench".to_string() } else { display(c, s) }).collect::<Vec<_>>().join(", ");
             for i in &idx {
                 msgs[*i].state = "notified".into();
             }
             st.nudged.insert(k, (now, if fresh { 1 } else { count + 1 }));
-            sends.push((node, pty, generation, idx.len(), from));
+            let n = idx.len();
+            // App-written text only; node ids are validated, but an agent name is free text: one line, no control characters
+            let notice = format!("[Agent Workbench] You have {n} new message{} from {from}. Call the read_inbox tool of the workbench MCP server and follow it.", if n == 1 { "" } else { "s" });
+            sends.push((node, pty, generation, js_prefix(&sanitize_text(&notice, false), 400), false));
         }
         if !sends.is_empty() {
             let msgs = st.msgs.get_mut(ch).unwrap();
             save_messages(repo, ch, msgs);
         }
     }
-    for (node, pty, generation, n, from) in sends {
-        // App-written text only: the content of any message is fetched by the agent through read_inbox
-        let notice = format!("[Agent Workbench] You have {n} new message{} from {from}. Call the read_inbox tool of the workbench MCP server and follow it.", if n == 1 { "" } else { "s" });
-        // Node ids are validated, but an agent name is free text: one line, no control characters
-        let notice = js_prefix(&sanitize_text(&notice, false), 400);
-        if !core.write_pty(&pty, &notice) {
+    for (node, pty, generation, text, own) in sends {
+        // Several lines only survive as one paste; without bracketed paste every newline would be an Enter
+        let data = if own && text.contains('\n') {
+            if core.pty_bracketed_paste(&pty) == Some(true) {
+                format!("\x1b[200~{text}\x1b[201~")
+            } else {
+                text.split('\n').map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+            }
+        } else {
+            text
+        };
+        if !core.write_pty(&pty, &data) {
             continue;
         }
         let (core, repo, ch) = (core.clone(), repo.clone(), ch.to_string());
@@ -354,118 +434,20 @@ pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
 
 // ---------- desktop and phone operations ----------
 
-fn team_mut<'a>(c: &'a mut Channel, id: &str) -> R<&'a mut Team> {
-    c.teams.iter_mut().find(|t| t.id == id).ok_or_else(|| err("not-found", "team"))
-}
-
-fn read_members(c: &Channel, req: &Value, except: Option<&str>) -> R<(Vec<String>, String)> {
-    let members: Vec<String> = req["memberIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-    let lead = s(req, "leadId").to_string();
-    let unique: HashSet<&String> = members.iter().collect();
-    if members.is_empty() || unique.len() != members.len() || !members.contains(&lead) {
-        return Err(err("invalid", "A team needs its members, and the lead must be one of them"));
-    }
-    for m in &members {
-        if !c.nodes.iter().any(|n| &n.id == m) {
-            return Err(err("not-found", "node"));
-        }
-        if c.teams.iter().any(|t| Some(t.id.as_str()) != except && t.member_ids.contains(m)) {
-            return Err(err("invalid", format!("{m} is already in another team")));
-        }
-    }
-    Ok((members, lead))
+fn group_mut(c: &mut Channel) -> R<&mut Team> {
+    c.teams.first_mut().ok_or_else(|| err("invalid", "Add an agent to this group first"))
 }
 
 pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value, origin: Origin) -> R<Value> {
     let ch = s(req, "channelId").to_string();
-    let tid = s(req, "teamId").to_string();
     let desktop = origin == Origin::Desktop;
     let out = match op {
-        "team.create" if desktop => {
-            let mut st = repo.st.lock().unwrap();
-            let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-            if c.teams.len() >= MAX_TEAMS {
-                return Err(err("invalid", "Too many teams"));
+        // The user's own message to an agent of the group: pasted into its terminal like typing it, then sent
+        "chat.send" if desktop => {
+            let text = s(req, "text");
+            if text.trim().is_empty() || text.len() > MAX_TEXT {
+                return Err(err("invalid", "Empty or too long"));
             }
-            let (members, lead) = read_members(c, req, None)?;
-            let relay = if RELAYS.contains(&s(req, "relay")) { s(req, "relay") } else { "approve" };
-            let bounds: Bounds = serde_json::from_value(req["bounds"].clone()).map_err(|_| err("invalid", "bounds"))?;
-            let name = js_prefix(sanitize_text(s(req, "name"), false).trim(), 80);
-            let t = Team {
-                id: short_id(),
-                name: if name.is_empty() { "team".into() } else { name },
-                goal: js_prefix(&sanitize_text(s(req, "goal"), true), MAX_GOAL),
-                lead_id: lead,
-                member_ids: members,
-                relay: relay.into(),
-                status: "draft".into(),
-                paused_reason: None,
-                bounds,
-                limits: Limits::default(),
-                started_at: None,
-                message_count: 0,
-            };
-            c.teams.push(t.clone());
-            if !teams_ok(c) {
-                c.teams.pop();
-                return Err(err("invalid", "team"));
-            }
-            repo.save(c)?;
-            serde_json::to_value(&t).unwrap()
-        }
-        "team.update" if desktop => {
-            let mut st = repo.st.lock().unwrap();
-            let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-            let running = team_mut(c, &tid)?.status == "running";
-            let before = c.teams.clone();
-            if req.get("memberIds").is_some() || req.get("leadId").is_some() || req.get("goal").is_some() {
-                if running {
-                    return Err(err("busy", "Pause the team before changing its members, lead or goal"));
-                }
-                if req.get("memberIds").is_some() {
-                    let (members, lead) = read_members(c, req, Some(&tid))?;
-                    let t = team_mut(c, &tid)?;
-                    t.member_ids = members;
-                    t.lead_id = lead;
-                }
-                if req.get("goal").is_some() {
-                    team_mut(c, &tid)?.goal = js_prefix(&sanitize_text(s(req, "goal"), true), MAX_GOAL);
-                }
-            }
-            let t = team_mut(c, &tid)?;
-            if req.get("name").is_some() {
-                let name = js_prefix(sanitize_text(s(req, "name"), false).trim(), 80);
-                if !name.is_empty() {
-                    t.name = name;
-                }
-            }
-            if RELAYS.contains(&s(req, "relay")) {
-                t.relay = s(req, "relay").into();
-            }
-            if let Ok(l) = serde_json::from_value::<Limits>(req["limits"].clone()) {
-                t.limits = Limits { max_messages: l.max_messages.clamp(1, 100_000), per_member_per10_min: l.per_member_per10_min.clamp(1, 10_000) };
-            }
-            if let Ok(b) = serde_json::from_value::<Bounds>(req["bounds"].clone()) {
-                t.bounds = b;
-            }
-            if !teams_ok(c) {
-                c.teams = before;
-                return Err(err("invalid", "team"));
-            }
-            repo.save(c)?;
-            Value::Null
-        }
-        "team.delete" if desktop => {
-            let mut st = repo.st.lock().unwrap();
-            let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-            if team_mut(c, &tid)?.status == "running" {
-                return Err(err("busy", "Pause the team first"));
-            }
-            c.teams.retain(|t| t.id != tid);
-            repo.save(c)?;
-            Value::Null
-        }
-        "team.start" | "team.resume" if desktop => {
             {
                 let mut st = repo.st.lock().unwrap();
                 let st = &mut *st;
@@ -473,28 +455,60 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                     return Err(err("stopped", "Stopped: clear the stop first"));
                 }
                 let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-                let t = team_mut(c, &tid)?;
-                let first = t.started_at.is_none() || t.status == "done" || t.status == "failed";
-                if t.status == "running" {
-                    return Ok(Value::Null);
+                let t = group_mut(c)?;
+                let to = if s(req, "to").is_empty() { t.lead_id.clone() } else { s(req, "to").to_string() };
+                if !t.member_ids.contains(&to) {
+                    return Err(err("not-found", "node"));
                 }
-                if op == "team.start" && t.goal.trim().is_empty() {
-                    return Err(err("invalid", "Give the team a goal first"));
+                // Talking to the group again is the user taking it back up
+                if t.status != "running" {
+                    t.status = "running".into();
+                    t.paused_reason = None;
+                    push_event(c, json!({ "t": "team-resumed", "at": now_ms(), "team": GROUP }));
                 }
-                t.status = "running".into();
-                t.paused_reason = None;
-                if first {
-                    t.started_at = Some(now_ms());
+                let title = js_prefix(sanitize_text(text, false).trim(), 120);
+                c.tasks.insert(to.clone(), NodeTask { title, status: "working".into(), summary: None, updated_at: now_ms(), source: "user".into() });
+                post(st, repo, &ch, GROUP, "user", &to, "message", text)?;
+            }
+            emit(core, repo, &ch);
+            deliver(core, repo, &ch);
+            return Ok(Value::Null);
+        }
+        // Who leads, how agent messages are relayed and the caps; members are whoever is in the channel
+        "team.update" if desktop => {
+            let mut st = repo.st.lock().unwrap();
+            let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
+            let t = group_mut(c)?;
+            if req.get("leadId").is_some() {
+                if !t.member_ids.iter().any(|m| m == s(req, "leadId")) {
+                    return Err(err("not-found", "node"));
+                }
+                t.lead_id = s(req, "leadId").into();
+            }
+            if RELAYS.contains(&s(req, "relay")) {
+                t.relay = s(req, "relay").into();
+            }
+            if let Ok(l) = serde_json::from_value::<Limits>(req["limits"].clone()) {
+                t.limits = Limits { max_messages: l.max_messages.clamp(1, 100_000), per_member_per10_min: l.per_member_per10_min.clamp(1, 10_000) };
+            }
+            repo.save(c)?;
+            Value::Null
+        }
+        "team.resume" if desktop => {
+            {
+                let mut st = repo.st.lock().unwrap();
+                if st.stop.is_some() {
+                    return Err(err("stopped", "Stopped: clear the stop first"));
+                }
+                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
+                let t = group_mut(c)?;
+                if t.status != "running" {
+                    t.status = "running".into();
+                    t.paused_reason = None;
+                    // A cap that paused the group starts counting again
                     t.message_count = 0;
-                }
-                let t = t.clone();
-                push_event(c, json!({ "t": if first { "team-started" } else { "team-resumed" }, "at": now_ms(), "team": tid }));
-                repo.save(c)?;
-                if first {
-                    let text = kickoff(st.channels.get(&ch).unwrap(), &t);
-                    let lead = t.lead_id.clone();
-                    st.channels.get_mut(&ch).unwrap().tasks.insert(lead.clone(), NodeTask { title: "Lead: plan and assign the work".into(), status: "working".into(), summary: None, updated_at: now_ms(), source: "assign".into() });
-                    post(st, repo, &ch, &tid, "app", &lead, "system", &text)?;
+                    push_event(c, json!({ "t": "team-resumed", "at": now_ms(), "team": GROUP }));
+                    repo.save(c)?;
                 }
             }
             emit(core, repo, &ch);
@@ -504,18 +518,8 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
         "team.pause" => {
             let mut st = repo.st.lock().unwrap();
             let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-            team_mut(c, &tid)?;
-            pause(c, &tid, if desktop { "paused by the user" } else { "paused from the phone" });
-            repo.save(c)?;
-            Value::Null
-        }
-        "team.finish" if desktop => {
-            let mut st = repo.st.lock().unwrap();
-            let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-            let t = team_mut(c, &tid)?;
-            t.status = "done".into();
-            t.paused_reason = None;
-            push_event(c, json!({ "t": "team-done", "at": now_ms(), "team": tid, "by": "user" }));
+            group_mut(c)?;
+            pause(c, GROUP, if desktop { "paused by the user" } else { "paused from the phone" });
             repo.save(c)?;
             Value::Null
         }
@@ -576,7 +580,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
         }
         "team.messages" => {
             let st = repo.st.lock().unwrap();
-            let list: Vec<&Msg> = st.msgs.get(&ch).map(|m| m.iter().filter(|m| tid.is_empty() || m.team_id == tid).rev().take(200).collect()).unwrap_or_default();
+            let list: Vec<&Msg> = st.msgs.get(&ch).map(|m| m.iter().rev().take(200).collect()).unwrap_or_default();
             return Ok(json!(list));
         }
         _ => return Err(err("not-allowed", "Not available here")),
@@ -765,27 +769,25 @@ pub fn mcp_call(core: &Arc<Core>, token: &str, tool: &str, args: &Value) -> Resu
                 }
                 let summary = js_prefix(&sanitize_text(&a("summary"), true), MAX_SUMMARY);
                 let c = st.channels.get_mut(&ch).unwrap();
-                let title = c.tasks.get(&me).map(|k| k.title.clone()).unwrap_or_else(|| "Task".into());
-                c.tasks.insert(me.clone(), NodeTask { title, status: status.clone(), summary: Some(summary.clone()).filter(|s| !s.is_empty()), updated_at: now_ms(), source: "report".into() });
+                // Who gave this node its task decides who hears the report: the lead for assigned work, else the user
+                let (title, source) = c.tasks.get(&me).map(|k| (k.title.clone(), k.source.clone())).unwrap_or_else(|| ("Task".into(), "user".into()));
+                c.tasks.insert(me.clone(), NodeTask { title, status: status.clone(), summary: Some(summary.clone()).filter(|s| !s.is_empty()), updated_at: now_ms(), source: source.clone() });
                 push_event(c, json!({ "t": "task", "at": now_ms(), "node": me, "status": status }));
-                let mut reply = "Report saved.".to_string();
-                if let Some(t) = &team {
-                    if t.lead_id == me && status == "done" {
-                        if let Some(t) = c.teams.iter_mut().find(|x| x.id == t.id) {
-                            t.status = "done".into();
+                let _ = repo.save(c);
+                let line = format!("[{status}] {summary}");
+                match &team {
+                    Some(t) if t.lead_id != me && source == "assign" => {
+                        if status == "working" {
+                            return Ok("Report saved.".into());
                         }
-                        push_event(c, json!({ "t": "team-done", "at": now_ms(), "team": t.id, "by": "lead" }));
-                        reply = "Report saved. The team is marked done; the user reviews and merges your worktree.".into();
-                    } else if t.lead_id != me && status != "working" {
-                        let _ = repo.save(c);
-                        post(st, &repo, &ch, &t.id, &me, &t.lead_id, "report", &format!("[{status}] {summary}"))?;
-                        reply = "Report saved and sent to your lead.".into();
+                        post(st, &repo, &ch, &t.id, &me, &t.lead_id, "report", &line)?;
+                        Ok("Report saved and sent to your lead.".into())
+                    }
+                    _ => {
+                        note(st, &repo, &ch, &me, "report", &line);
+                        Ok("Report saved; the user sees it in the group chat.".into())
                     }
                 }
-                if let Some(c) = st.channels.get(&ch) {
-                    let _ = repo.save(c);
-                }
-                Ok(reply)
             }
             "get_member_changes" => {
                 let t = lead_only(&team)?;
@@ -962,23 +964,44 @@ mod tests {
     }
 
     #[test]
-    fn leaving_the_canvas_leaves_the_team() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let mut c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A")], edges: vec![], events: vec![], teams: vec![team("auto")], tasks: Default::default() };
-        c.teams[0].member_ids = vec!["L".into(), "A".into()];
-        forget_node(&mut c, "L");
-        assert_eq!(c.teams[0].lead_id, "A");
-        assert_eq!(c.teams[0].status, "paused");
-        forget_node(&mut c, "A");
+    fn the_channel_is_the_group() {
+        let n = |id: &str, agent: &str| Node { id: id.into(), agent: agent.into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
+        let mut c = Channel { schema_version: 1, id: "c".into(), name: "general".into(), nodes: vec![], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+        assert!(!sync_group(&mut c), "no nodes, no group");
+        c.nodes.push(n("S", "cmd"));
+        assert!(sync_group(&mut c));
+        assert_eq!((c.teams[0].lead_id.as_str(), c.teams[0].status.as_str(), c.teams[0].relay.as_str()), ("S", "running", "approve"));
+        c.nodes.push(n("L", "claude"));
+        c.nodes.push(n("A", "codex"));
+        sync_group(&mut c);
+        assert_eq!(c.teams[0].member_ids, ["S", "L", "A"]);
+        assert_eq!(c.teams[0].lead_id, "S", "a lead that is still here keeps leading");
+        assert!(teams_ok(&c));
+        // The lead leaves: the first agent takes over and the group keeps running
+        c.nodes.remove(0);
+        forget_node(&mut c, "S");
+        assert_eq!((c.teams[0].lead_id.as_str(), c.teams[0].status.as_str()), ("L", "running"));
+        assert!(!sync_group(&mut c), "nothing to change twice");
+        c.name = "renamed".into();
+        sync_group(&mut c);
+        assert_eq!(c.teams[0].name, "renamed");
+        c.nodes.clear();
+        sync_group(&mut c);
         assert!(c.teams.is_empty());
     }
 
     #[test]
-    fn kickoff_tells_the_lead_the_tools_and_the_members() {
+    fn the_brief_tells_each_role_its_tools() {
         let n = |id: &str| Node { id: id.into(), agent: "codex".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
         let c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A"), n("B")], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
-        let k = kickoff(&c, &team("auto"));
-        assert!(k.contains("assign_task") && k.contains("request_merge") && k.contains("report(status=\"done\""));
-        assert!(k.contains("- A (codex)") && k.contains("- B (codex)") && !k.contains("- L (codex)"), "the lead is not listed as its own member");
+        let lead = brief(&c, &team("auto"), "L");
+        assert!(lead.contains("You lead this group") && lead.contains("assign_task") && lead.contains("request_merge") && lead.contains("report"));
+        assert!(lead.contains("A (codex)") && lead.contains("B (codex)") && !lead.contains("L (codex)"), "the lead is not its own member");
+        let member = brief(&c, &team("auto"), "A");
+        assert!(member.contains("the lead is L (codex)") && !member.contains("assign_task"));
+        let mut solo = team("auto");
+        solo.member_ids = vec!["L".into()];
+        assert!(!brief(&c, &solo, "L").contains("lead"), "alone in the group: just how to answer");
+        assert!(!lead.contains('\n'), "one line, so it also survives a CLI without bracketed paste");
     }
 }

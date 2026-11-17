@@ -152,7 +152,7 @@ try {
     assert.ok((await p.eval(`window.__canvasCalls`)) < 5, `canvas calls in 2 s: ${await p.eval(`window.__canvasCalls`)}`)
     assert.equal(await Promise.race([p.eval(`window.api.settings.get().then(() => 'ok')`), sleep(5000).then(() => 'stuck')]), 'ok')
   })
-  await check('Cowork team: frame, routes, Feed cards and the team panel', async () => {
+  await check('Cowork group: roster, chat to an agent, Take Over screen and card mode', async () => {
     const call = (op, req) => p.eval(`window.api.canvas.call(${JSON.stringify(op)}, ${JSON.stringify(req ?? null)})`)
     // A worktree needs a base commit; the workspace so far only has git init
     for (const a of [['add', '-A'], ['-c', 'user.name=check', '-c', 'user.email=check@example.invalid', 'commit', '-qm', 'base']]) execFileSync('git', a, { cwd: ws, stdio: 'ignore' })
@@ -164,15 +164,23 @@ try {
     }
     const a = await node(0)
     const b = await node(440)
-    const team = (await call('team.create', { channelId: ch, name: 'Checkers', goal: 'g', leadId: a, memberIds: [a, b], relay: 'approve', bounds: { x: 0, y: 0, width: 1, height: 1 } })).data
-    assert.ok(team?.id, 'team created')
     await p.eval(`document.querySelector('.react-flow__controls-fitview').click(), true`)
-    await p.waitFor(`document.querySelector('.cv-team .cv-team-name')?.textContent === 'Checkers'`)
-    await p.waitFor(`document.querySelectorAll('.react-flow__edge.cv-edge-team').length === 1`)
-    await p.eval(`document.querySelector('.cv-team-head').click(), true`)
-    await p.waitFor(`document.querySelector('.cv-right .cv-h')?.textContent.includes('Checkers') && document.querySelectorAll('.cv-right .segmented button').length === 3`)
-    await p.eval(`[...document.querySelectorAll('.cv-topbar .segmented button')].find((b) => b.textContent === 'Feed').click(), true`)
-    await p.waitFor(`document.querySelectorAll('.cv-feed-team .cv-card').length === 2`)
+    // The channel is the group: both nodes are in it without anything being created or started
+    const group = (await call('channel.get', { channelId: ch })).data.teams[0]
+    assert.deepEqual([...group.memberIds].sort(), [a, b].sort())
+    assert.equal(group.status, 'running')
+    await p.waitFor(`document.querySelectorAll('.cv-left .cv-bot').length >= 3 && !!document.querySelector('.cv-topbar .cv-break') && !!document.querySelector('.cv-topbar .cv-proxy')`)
+    await p.waitFor(`document.querySelectorAll('.cv-chat-to option').length === 2`)
+    // What the user types in the chat box lands in that agent's terminal and is sent: cmd prints the echo on a line of its own
+    const sent = await call('chat.send', { channelId: ch, to: b, text: 'echo wb-chat-7341' })
+    assert.ok(sent.ok, JSON.stringify(sent))
+    await p.waitFor(`[...document.querySelectorAll('.cv-chat-msg.mine .cv-chat-text')].some((e) => e.textContent === 'echo wb-chat-7341')`)
+    await p.waitFor(`window.api.canvas.call('node.screen', ${JSON.stringify({ channelId: ch, nodeId: b })}).then((r) => /^wb-chat-7341$/m.test(r.data))`, 20000)
+    // Selecting the node puts it in the Take Over panel, with its screen
+    await p.eval(`[...document.querySelectorAll('.cv-topbar .segmented button')].find((x) => x.textContent === 'Cards').click(), true`)
+    await p.waitFor(`document.querySelectorAll('.cv-cards .cv-card').length === 2`)
+    await p.eval(`[...document.querySelectorAll('.cv-cards .cv-card')].find((c) => c.textContent.includes(${JSON.stringify(b.slice(0, 4))})).click(), true`)
+    await p.waitFor(`document.querySelector('.cv-take-name')?.textContent.includes(${JSON.stringify(b.slice(0, 4))}) && document.querySelector('.cv-take-screen pre').textContent.includes('wb-chat-7341')`, 15000)
     await call('stop')
     await call('stop.killAll')
     await call('stop.clear')
