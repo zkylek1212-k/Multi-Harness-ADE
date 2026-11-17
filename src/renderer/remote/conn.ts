@@ -1,5 +1,5 @@
 import type { ClientMessage, ServerMessage } from '../../shared/remoteProtocol'
-import type { CoworkResult } from '../../shared/cowork'
+import type { CanvasOp, CanvasOps, CanvasResult } from '../../shared/canvas'
 
 // 與桌面 Remote Bridge 的 WebSocket 連線。iOS 把 App 切到背景時連線一定會斷，
 // 所以這裡的重點是「回到前景立刻重連、重新 attach 目前的終端」。
@@ -105,21 +105,21 @@ export class RemoteConnection {
 
   private reqId = 0
 
-  /** Cowork 操作（與桌面 window.api.cowork 同名同參數）；斷線或逾時回 ok:false，不丟例外 */
-  cowork<T = unknown>(windowId: number, op: string, ...args: unknown[]): Promise<CoworkResult<T>> {
+  /** 畫布操作（與桌面 window.api.canvas.call 同名同參數）；斷線或逾時回 ok:false，不丟例外，也不自動重送 */
+  canvas<K extends CanvasOp>(windowId: number, op: K, req?: CanvasOps[K]['req']): Promise<CanvasResult<CanvasOps[K]['res']>> {
     if (this.ws?.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, code: 'offline' })
     const reqId = ++this.reqId
     return new Promise((resolve) => {
-      const done = (r: CoworkResult<T>): void => {
+      const done = (r: CanvasResult<CanvasOps[K]['res']>): void => {
         window.clearTimeout(timer)
         off()
         resolve(r)
       }
-      const timer = window.setTimeout(() => done({ ok: false, code: 'timeout' }), 60_000)
+      const timer = window.setTimeout(() => done({ ok: false, code: 'timeout' }), 30_000)
       const off = this.onMessage((m) => {
-        if (m.t === 'cowork' && m.reqId === reqId) done(m.result as CoworkResult<T>)
+        if (m.t === 'canvas' && m.reqId === reqId) done(m.result as CanvasResult<CanvasOps[K]['res']>)
       })
-      this.send({ t: 'cowork', reqId, windowId, op, args })
+      this.send({ t: 'canvas', reqId, windowId, op, req: req ?? null })
     })
   }
 

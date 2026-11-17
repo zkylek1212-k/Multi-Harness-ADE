@@ -95,6 +95,11 @@ impl Mirror {
         (self.term.columns() as u16, self.term.screen_lines() as u16)
     }
 
+    /// The program asked for bracketed paste (DECSET 2004): a pasted newline is text, not Enter
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     fn line_text(&self, line: Line) -> String {
         let grid = self.term.grid();
         let row = &grid[line];

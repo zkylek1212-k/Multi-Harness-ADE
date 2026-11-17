@@ -16,6 +16,7 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { trackComposition, isImeKey } from '/src/renderer/src/panels/terminal/imeGuard.ts'
 import { looksLikeApprovalPrompt, readApprovalScreen } from '/src/shared/approvalDetect.ts'
+import { createTerminalSession } from '/src/renderer/src/panels/terminal/terminalSession.ts'
 import TerminalView from '/src/renderer/remote/TerminalView.tsx'
 import { Home, SettingsSheet } from '/src/renderer/remote/App.tsx'
 import '/src/renderer/remote/remote.css'
@@ -49,6 +50,65 @@ window.makeTerminal = (guarded) => {
     return true
   })
   term.focus()
+}
+// xterm 5.5 leaves a viewport refresh scheduled across dispose(), which then throws: let the pending frames run first
+window.quietDispose = async s => { await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); s?.dispose() }
+// A canvas node: the same session under CSS scale
+window.makeZoomed = async (scale, compensate) => {
+  await quietDispose(window.zoomed)
+  document.body.innerHTML = '<div style="transform:scale(' + scale + ');transform-origin:0 0;width:300px;height:120px"><div id="zoomed" style="width:300px;height:120px"></div></div>'
+  window.zoomed = createTerminalSession({ zoomCompensation: compensate })
+  zoomed.attach(document.getElementById('zoomed'))
+  zoomed.term.write('abcdefghijklmnopqrstuvwxyz\\r\\nABCDEFGHIJKLMNOPQRSTUVWXYZ')
+  // Painted, as the user sees it before dragging: xterm draws on the next frame
+  return new Promise((done, fail) => {
+    const deadline = Date.now() + 5000
+    const painted = () => document.querySelector('.xterm-rows')?.textContent.includes('XYZ') ? done(true)
+      : Date.now() > deadline ? fail(new Error('terminal never painted')) : requestAnimationFrame(painted)
+    painted()
+  })
+}
+// Where the user sees a cell, a quarter of the way in
+window.cellPoint = (col, row) => {
+  const r = document.querySelector('.xterm-screen').getBoundingClientRect()
+  return { x: r.left + (col + 0.25) * r.width / zoomed.term.cols, y: r.top + (row + 0.5) * r.height / zoomed.term.rows }
+}
+// Session against a scripted PTY: what reaches the screen across sleep and wake, and what is asked of the backend
+window.checkSleepWake = async () => {
+  const calls = [], on = {}
+  let reply
+  const listener = name => (id, cb) => { on[name] = cb; return () => { if (on[name] === cb) delete on[name] } }
+  window.api = { pty: {
+    spawn: async () => 'pty1',
+    attach: () => { calls.push('attach'); return new Promise(r => { reply = r }) },
+    onData: listener('data'), onResized: listener('resized'), onExit: listener('exit'),
+    write: () => calls.push('write'), resize: () => calls.push('resize'), kill: () => calls.push('kill')
+  } }
+  const until = async (what, f) => {
+    const deadline = Date.now() + 5000
+    while (!f()) { if (Date.now() > deadline) throw new Error('timed out: ' + what); await new Promise(r => setTimeout(r, 10)) }
+  }
+  document.body.innerHTML = '<div id="a" style="width:600px;height:200px"></div><div id="b" style="width:600px;height:200px"></div>'
+  const s = createTerminalSession()
+  s.attach(document.getElementById('a'))
+  s.start({ spawn: { command: 'x' } })
+  await until('output listener', () => on.data)
+  on.data('before sleep')
+  s.sleep()
+  const asleep = { data: !!on.data, exit: !!on.exit }
+  s.wake()
+  await until('resubscribe', () => reply)
+  on.data('|after')
+  reply({ snapshot: 'SNAP', cols: 50, rows: 6 })
+  await until('snapshot applied', () => s.term.cols === 50)
+  on.data('|live')
+  await new Promise(r => s.term.write('', r))
+  const line = s.term.buffer.active.getLine(0).translateToString(true)
+  s.attach(document.getElementById('b'))
+  const moved = document.getElementById('b').contains(s.term.element)
+  s.detach()
+  await quietDispose(s)
+  return { asleep, line, moved, calls }
 }
 window.desktopNeedsApproval = () => looksLikeApprovalPrompt(readApprovalScreen(window.term))
 const messages = new Set(), states = new Set()
@@ -190,6 +250,35 @@ app.whenReady().then(async () => {
     })()`)
     assert.equal(await run('window.desktopNeedsApproval()'), false, 'desktop clears approval when the prompt is erased')
     console.log('desktop rendered-screen approval / ordinary prose / automatic clearing: passed')
+
+    // Canvas zoom: a drag over the cells the user sees selects those cells at every scale.
+    const cdp = await win.webContents.ready
+    const drag = async () => {
+      const [from, to] = await run('[cellPoint(5, 0), cellPoint(10, 1)]')
+      const mouse = (type, p, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', buttons, clickCount: 1 })
+      await mouse('mousePressed', from, 1)
+      await mouse('mouseMoved', { x: (from.x + to.x) / 2, y: to.y }, 1)
+      await mouse('mouseMoved', to, 1)
+      await mouse('mouseReleased', to, 0)
+      return (await run('zoomed.term.getSelection()')).replace(/\r/g, '')
+    }
+    const dragged = 'fghijklmnopqrstuvwxyz\nABCDEFGHIJ'
+    for (const scale of [0.5, 1, 1.5]) {
+      await run(`window.makeZoomed(${scale}, true)`)
+      assert.equal(await drag(), dragged, `selection follows the pointer at scale ${scale}`)
+    }
+    await run('window.makeZoomed(1.5, false)')
+    assert.notEqual(await drag(), dragged, 'without compensation the same drag selects other cells: the check can fail')
+    await run('quietDispose(zoomed)')
+    console.log('zoomed terminal selection at 0.5 / 1 / 1.5: passed')
+
+    const slept = await run('window.checkSleepWake()')
+    assert.deepEqual(slept.asleep, { data: false, exit: true }, 'sleep drops the screen stream and keeps the exit subscription')
+    assert.equal(slept.line, 'SNAP|after|live', 'wake replaces the screen with the snapshot, then later output once and in order')
+    assert.equal(slept.moved, true, 'attach moves the terminal to another container')
+    assert.equal(slept.calls.filter(c => c === 'attach').length, 1, 'wake resubscribes once')
+    assert.ok(!slept.calls.includes('kill'), 'sleep, wake, detach and dispose never kill the PTY: ' + JSON.stringify(slept.calls))
+    console.log('terminal session sleep / wake / move / dispose without kill: passed')
 
     await run('window.mountMobile()')
     await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', {enabled:true})

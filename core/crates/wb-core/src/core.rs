@@ -181,7 +181,6 @@ impl Core {
     /// Quit: terminals end, independent programs started from them survive
     pub fn shutdown(&self) {
         crate::remote::shutdown(self);
-        crate::cowork_ipc::shutdown(self);
         self.pty_shutdown();
     }
 

@@ -169,6 +169,50 @@ try {
     await p.waitFor(`JSON.stringify(${names}) === '["project","other-project"]' && !document.querySelector('.dash-context-menu')`)
     assert.equal(await p.eval(`document.querySelectorAll('.dash-folder-group.is-pinned').length`), 0)
   })
+  await check('Cowork canvas settles instead of calling the backend in a loop', async () => {
+    p.eval(`(localStorage.setItem('wb-ui-mode', 'cowork'), location.reload(), true)`).catch(() => {})
+    await p.waitFor(`!!window.api && !!document.querySelector('.react-flow')`, 30000)
+    await p.waitFor(`document.body.innerText.includes('general')`)
+    await p.eval(`(window.__canvasCalls = 0, window.api.canvas.call = ((f) => (...a) => (window.__canvasCalls++, f(...a)))(window.api.canvas.call), true)`)
+    assert.match(await p.eval(`String(window.api.canvas.call)`), /__canvasCalls/, 'call counter installed')
+    // A measuring window, not a wait for state: a render loop calls many times a second, a settled view not at all
+    await sleep(2000)
+    assert.ok((await p.eval(`window.__canvasCalls`)) < 5, `canvas calls in 2 s: ${await p.eval(`window.__canvasCalls`)}`)
+    assert.equal(await Promise.race([p.eval(`window.api.settings.get().then(() => 'ok')`), sleep(5000).then(() => 'stuck')]), 'ok')
+  })
+  await check('Cowork group: roster, chat to an agent, Take Over screen and card mode', async () => {
+    const call = (op, req) => p.eval(`window.api.canvas.call(${JSON.stringify(op)}, ${JSON.stringify(req ?? null)})`)
+    // A worktree needs a base commit; the workspace so far only has git init
+    for (const a of [['add', '-A'], ['-c', 'user.name=check', '-c', 'user.email=check@example.invalid', 'commit', '-qm', 'base']]) execFileSync('git', a, { cwd: ws, stdio: 'ignore' })
+    const ch = (await call('channels.list')).data[0].id
+    const node = async (x) => {
+      const r = await call('node.create', { channelId: ch, agent: 'cmd', workspace: 'worktree', position: { x, y: 0 }, size: { width: 400, height: 260 } })
+      assert.ok(r.ok, JSON.stringify(r))
+      return r.data.id
+    }
+    const a = await node(0)
+    const b = await node(440)
+    await p.eval(`document.querySelector('.react-flow__controls-fitview').click(), true`)
+    // The channel is the group: both nodes are in it without anything being created or started
+    const group = (await call('channel.get', { channelId: ch })).data.teams[0]
+    assert.deepEqual([...group.memberIds].sort(), [a, b].sort())
+    assert.equal(group.status, 'running')
+    await p.waitFor(`document.querySelectorAll('.cv-left .cv-bot').length >= 3 && !!document.querySelector('.cv-topbar .cv-break') && !!document.querySelector('.cv-topbar .cv-proxy')`)
+    await p.waitFor(`document.querySelectorAll('.cv-chat-to option').length === 2`)
+    // What the user types in the chat box lands in that agent's terminal and is sent: cmd prints the echo on a line of its own
+    const sent = await call('chat.send', { channelId: ch, to: b, text: 'echo wb-chat-7341' })
+    assert.ok(sent.ok, JSON.stringify(sent))
+    await p.waitFor(`[...document.querySelectorAll('.cv-chat-msg.mine .cv-chat-text')].some((e) => e.textContent === 'echo wb-chat-7341')`)
+    await p.waitFor(`window.api.canvas.call('node.screen', ${JSON.stringify({ channelId: ch, nodeId: b })}).then((r) => /^wb-chat-7341$/m.test(r.data))`, 20000)
+    // Selecting the node puts it in the Take Over panel, with its screen
+    await p.eval(`[...document.querySelectorAll('.cv-topbar .segmented button')].find((x) => x.textContent === 'Cards').click(), true`)
+    await p.waitFor(`document.querySelectorAll('.cv-cards .cv-card').length === 2`)
+    await p.eval(`[...document.querySelectorAll('.cv-cards .cv-card')].find((c) => c.textContent.includes(${JSON.stringify(b.slice(0, 4))})).click(), true`)
+    await p.waitFor(`document.querySelector('.cv-take-name')?.textContent.includes(${JSON.stringify(b.slice(0, 4))}) && document.querySelector('.cv-take-screen pre').textContent.includes('wb-chat-7341')`, 15000)
+    await call('stop')
+    await call('stop.killAll')
+    await call('stop.clear')
+  })
   await check('closing the window ends the app and its terminals', async () => {
     await p.eval(`window.api.pty.spawn({ command: 'cmd' })`)
     p.eval(`document.querySelector('#wb-window-controls button[data-act="close"]').click()`).catch(() => {})

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import FileTreePanel from '@panels/filetree/FileTreePanel'
 import GitPanel from '@panels/git/GitPanel'
 import EditorPanel from '@panels/editor/EditorPanel'
@@ -12,6 +12,9 @@ import Splitter from '@/components/Splitter'
 import VibeRail from '@/components/VibeRail'
 import VibeUsageBar from '@/components/VibeUsageBar'
 import RemoteIndicator from '@/components/RemoteIndicator'
+import { ProxyStatusPill } from '@/components/ProxySettings'
+// React Flow 只在進 Cowork 模式時載入，不拖慢 Developer／Vibe 啟動
+const CanvasView = lazy(() => import('@panels/canvas/CanvasView'))
 import {
   IconSidebarCollapse,
   IconSidebarExpand,
@@ -79,10 +82,14 @@ export default function App(): JSX.Element {
     agentModifiedFiles
   } = useWorkbench()
   const isVibe = uiMode === 'vibe'
+  const isCowork = uiMode === 'cowork'
+  // Cowork 畫布蓋在原本的版面上；底下仍是 Developer 版面且保持掛載，終端不會因切換模式而結束（§2.4）
+  const layoutMode: 'developer' | 'vibe' = isVibe ? 'vibe' : 'developer'
   // Vibe 模式左欄只當任務看板（Dashboard）；Files / Git 收起，程式碼改由中欄「程式碼」分頁看 diff
   const activeSidebarTab = isVibe ? 'dashboard' : sidebarTab
   const [center, setCenter] = useState<CenterTab>(isVibe ? 'browser' : 'editor')
   const [browserOpened, setBrowserOpened] = useState(false)
+  const [proxySettingsOpen, setProxySettingsOpen] = useState(false)
   const { t } = useTranslation()
 
   useEffect(() => {
@@ -168,15 +175,15 @@ export default function App(): JSX.Element {
   }, [center])
 
   // 兩種模式各存一份版面；layoutModeRef 記住目前 layout 屬於哪個模式，切換時不會寫錯 key
-  const layoutModeRef = useRef(uiMode)
-  const [layout, setLayout] = useState<LayoutState>(() => loadLayout(uiMode))
+  const layoutModeRef = useRef(layoutMode)
+  const [layout, setLayout] = useState<LayoutState>(() => loadLayout(layoutMode))
   useEffect(() => saveLayout(layout, layoutModeRef.current), [layout])
   useEffect(() => {
-    if (layoutModeRef.current === uiMode) return
-    layoutModeRef.current = uiMode
-    setLayout(loadLayout(uiMode))
-    setCenter(uiMode === 'vibe' ? 'browser' : 'editor')
-  }, [uiMode])
+    if (layoutModeRef.current === layoutMode) return
+    layoutModeRef.current = layoutMode
+    setLayout(loadLayout(layoutMode))
+    setCenter(layoutMode === 'vibe' ? 'browser' : 'editor')
+  }, [layoutMode])
 
   // 有人請求開網址（終端偵測到 dev server / 狀態列）→ 切到 Browser
   useEffect(() => {
@@ -378,7 +385,7 @@ export default function App(): JSX.Element {
         </div>
 
         <div className="app-header-center" onDragOver={onHeaderDragOver} onDrop={(e) => e.preventDefault()}>
-          {!isVibe && (
+          {!isVibe && !isCowork && (
           <>
           {/* 編輯器組與終端圖示可互相拖曳換位；順序就是下方兩欄的左右（或上下）位置 */}
           <div
@@ -468,6 +475,7 @@ export default function App(): JSX.Element {
           )}
 
           <RemoteIndicator />
+          <ProxyStatusPill onClick={() => { setProxySettingsOpen(true); openSettings() }} />
 
           {/* Vibe 模式的設定鈕在左側圖示列最下方 */}
           {!isVibe && (
@@ -483,7 +491,13 @@ export default function App(): JSX.Element {
       </header>
 
       {/* 工作區（各欄起始 Y 座標完全齊平，底線絕對水平對齊） */}
-      <div className={`workarea dock-${isVibe ? 'vibe' : layout.dock}`} style={gridStyle}>
+      {isCowork && (
+        <Suspense fallback={<div className="cv-root" />}>
+          <CanvasView />
+        </Suspense>
+      )}
+      {/* Cowork 模式只把版面藏起來，不卸載：終端與編輯器狀態都留著（§2.4） */}
+      <div className={`workarea dock-${isVibe ? 'vibe' : layout.dock}`} style={isCowork ? { ...gridStyle, display: 'none' } : gridStyle}>
         <aside
           className="col col-left"
           style={{
@@ -631,8 +645,8 @@ export default function App(): JSX.Element {
 
       <SettingsModal
         isOpen={settingsModal.isOpen}
-        onClose={closeSettings}
-        initialTab={settingsModal.tab}
+        onClose={() => { setProxySettingsOpen(false); closeSettings() }}
+        initialTab={proxySettingsOpen ? 'proxy' : settingsModal.tab}
       />
     </div>
   )

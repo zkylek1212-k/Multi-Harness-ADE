@@ -2,7 +2,7 @@
 // 桌面 main（src/main/remote/server.ts）與手機端（src/renderer/remote/）共用這份型別。
 // 每則訊息都是 JSON，以 `t` 區分種類。
 import type { BgTask, FsEntry } from '../preload/index'
-import type { CoworkResult, CoworkRun } from './cowork'
+import type { CanvasOp, CanvasResult, CanvasUpdate } from './canvas'
 
 export interface RemoteVibeStatus {
   workspace: string
@@ -81,8 +81,8 @@ export type ClientMessage =
   | { t: 'visibility'; visible: boolean }
   /** 手機切換 Bypass 模式（只影響之後啟動的 agent） */
   | { t: 'setBypass'; enabled: boolean }
-  /** Cowork 操作：op／args 與桌面 window.api.cowork 相同（main/ipc/cowork.ts 的 ops），工作區由 windowId 決定 */
-  | { t: 'cowork'; reqId: number; windowId: number; op: string; args: unknown[] }
+  /** Cowork 2.0 畫布操作：只限 PHONE_CANVAS_OPS，req 與桌面 window.api.canvas.call 相同，工作區由 windowId 決定 */
+  | { t: 'canvas'; reqId: number; windowId: number; op: CanvasOp; req: unknown }
   | { t: 'ping' }
 
 export type ServerMessage =
@@ -119,9 +119,9 @@ export type ServerMessage =
       files: RemoteGitFile[]
       error?: string
     }
-  | { t: 'cowork'; reqId: number; result: CoworkResult<unknown> }
-  /** 任何一場 Cowork 有變化（不含 context） */
-  | { t: 'coworkRun'; run: CoworkRun }
+  | { t: 'canvas'; reqId: number; result: CanvasResult<unknown> }
+  /** 某個 Channel 有變化；審批卡只帶檔名與增減行數，不含程式碼內容 */
+  | { t: 'canvasUpdate'; update: CanvasUpdate }
   | { t: 'error'; message: string }
   | { t: 'pong' }
 
@@ -157,12 +157,8 @@ export const BUILTIN_LAUNCHERS: RemoteLauncher[] = [
   { key: 'cmd', title: 'Command Prompt', kind: 'shell' }
 ]
 
-/** 手機可以呼叫的 Cowork 操作；新操作預設不開放（editBoard、git 設定放行只在桌面） */
-export const PHONE_COWORK_OPS: ReadonlySet<string> = new Set([
-  'capabilities', 'models', 'list', 'get', 'start', 'cancel', 'discuss', 'summarizer', 'summarize', 'retry', 'drop', 'note', 'feedback',
-  'dismiss', 'approve', 'raiseLimits', 'delete', 'execPreview', 'execDiff', 'execStart', 'execMessage', 'execRetry', 'execAcceptScope',
-  'execRevertScope', 'execWaive', 'execPause', 'execResume', 'execMerge', 'execCleanup'
-])
+/** 手機可以呼叫的畫布操作（§3.9）；建立／刪除節點、合併、捨棄、全部結束、解除停止、開始團隊與核准合併請求只在桌面。與 wb-core PHONE_CANVAS_OPS 相同 */
+export const PHONE_CANVAS_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['channels.list', 'channel.get', 'node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])
 
-/** 這些操作要留下稽核紀錄（內容識別，不含機密） */
-export const PHONE_AUDITED_OPS: ReadonlySet<string> = new Set(['approve', 'execStart', 'execAcceptScope', 'execRevertScope', 'execWaive', 'execMerge', 'execCleanup', 'delete'])
+/** 這些操作要留下稽核紀錄（只記識別碼與長度，不含訊息或理由內容）；白名單外的嘗試一律也記 */
+export const PHONE_AUDITED_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])

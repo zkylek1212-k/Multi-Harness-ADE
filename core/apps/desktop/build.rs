@@ -20,6 +20,11 @@ fn main() {
     let target = std::path::Path::new("resources/plugins/shared-project-memory");
     let _ = std::fs::remove_dir_all(target);
     copy_plugin(plugin, target);
+    // resources/bin ships as <install dir>\bin; release.ps1 puts wb-hook.exe here before `tauri build`.
+    // The folder must exist for every build, and an exe already there is left alone.
+    let bin = std::path::Path::new("resources/bin");
+    let _ = std::fs::create_dir_all(bin);
+    let _ = std::fs::write(bin.join("README.txt"), "release.ps1 copies wb-hook.exe here before tauri build; development builds use the one next to agent-workbench.exe.\r\n");
     // Listing the commands puts them under capabilities, so a page in a child webview cannot reach them.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
         "ipc",

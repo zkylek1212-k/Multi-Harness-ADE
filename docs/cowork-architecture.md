@@ -1,5 +1,7 @@
 # Cowork functional architecture / Cowork 功能架構
 
+> **Superseded by Cowork 2.0 (2026-11-13, DEC-013) / 已由 Cowork 2.0 取代。** The meeting, planning and background-execution protocol described here was removed. It is kept only as a record. Cowork is now a canvas of interactive terminal nodes, each in its own worktree: see `src/shared/canvas.ts` and `core/crates/wb-core/src/canvas.rs`.
+
 Cowork coordinates installed Claude Code, Codex, and Antigravity CLIs. The desktop app owns meeting state, budgets, records, and scheduling; each official CLI owns model execution and authentication. Discussion and project planning do not authorize repository changes. Background execution requires explicit user approval.
 
 Cowork 協調已安裝的官方 CLI；工作台負責會議狀態、預算、紀錄與排程，官方 CLI 負責模型執行與登入。討論及專案規劃不代表允許修改專案，背景執行須由使用者明確核准。

@@ -13,6 +13,67 @@ use crate::custom_agent::sanitize_custom_agent;
 use crate::paths::find_cli;
 use crate::util::{basename, exists, home, p, read_text, resolve};
 
+pub fn sanitize_proxy(raw: Option<&Value>) -> Result<Value, String> {
+    let raw = raw.unwrap_or(&Value::Null);
+    let mode = raw.get("mode").and_then(Value::as_str).unwrap_or("inherit");
+    if !["inherit", "custom", "direct"].contains(&mode) {
+        return Err("Invalid proxy mode".into());
+    }
+    let clean = |key: &str| -> Result<String, String> {
+        let text = raw.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        if text.len() > 8192 || text.chars().any(char::is_control) {
+            return Err("Invalid proxy setting".into());
+        }
+        Ok(text.to_string())
+    };
+    let address = clean("url")?;
+    let address = if address.is_empty() {
+        String::new()
+    } else {
+        // Never echo the supplied URL: it may contain credentials we must reject.
+        let url = url::Url::parse(&address).map_err(|_| "Invalid proxy URL")?;
+        if !["http", "https", "socks5"].contains(&url.scheme()) || url.host().is_none() || url.port_or_known_default().filter(|p| *p > 0).is_none()
+            || !url.username().is_empty() || url.password().is_some() || address.contains('@') || url.path() != "/" && !url.path().is_empty() || url.query().is_some() || url.fragment().is_some()
+        {
+            return Err("Proxy URL must contain only an http, https or socks5 scheme, host and port".into());
+        }
+        url.to_string()
+    };
+    let mut overrides = Map::new();
+    for (id, value) in raw.get("agents").and_then(Value::as_object).into_iter().flatten() {
+        if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) || !matches!(value.as_str(), Some("inherit" | "custom" | "direct")) {
+            return Err("Invalid agent proxy mode".into());
+        }
+        overrides.insert(id.clone(), value.clone());
+    }
+    if address.is_empty() && (mode == "custom" || overrides.values().any(|v| v == "custom")) {
+        return Err("Custom proxy requires a URL".into());
+    }
+    Ok(json!({ "mode": mode, "url": address, "username": clean("username")?, "bypass": clean("bypass")?, "agents": overrides }))
+}
+
+pub fn effective_proxy(proxy: &Value, agent: &str) -> Value {
+    let mut out = proxy.clone();
+    out["mode"] = proxy.get("agents").and_then(|a| a.get(agent)).cloned().unwrap_or_else(|| proxy["mode"].clone());
+    out.as_object_mut().unwrap().shift_remove("agents");
+    out
+}
+
+pub fn proxy_snapshot(proxy: &Value, sealed: &[u8]) -> Value {
+    use sha2::{Digest, Sha256};
+    let mode = proxy["mode"].as_str().unwrap_or("inherit");
+    let mut out = json!({ "mode": mode });
+    if mode == "custom" {
+        out["url"] = proxy["url"].clone();
+        // An opaque revision detects credential changes without putting them in session metadata.
+        let mut hash = Sha256::new();
+        hash.update(proxy.to_string().as_bytes());
+        hash.update(sealed);
+        out["revision"] = json!(format!("{:x}", hash.finalize()));
+    }
+    out
+}
+
 fn read_json(path: &Path) -> Value {
     read_text(path).and_then(|t| serde_json::from_str(&t).ok()).filter(Value::is_object).unwrap_or(json!({}))
 }
@@ -140,6 +201,7 @@ impl Core {
         }
 
         let mut out = Map::new();
+        out.insert("proxy".into(), sanitize_proxy(global.get("proxy")).unwrap_or_else(|_| sanitize_proxy(None).unwrap()));
         // A repository cannot pick a program or extension paths on this machine
         out.insert("customAgent".into(), sanitize_custom_agent(global.get("customAgent")));
         out.insert("cliPaths".into(), sanitized_paths(&["claude", "antigravity", "codex", "powershell", "cmd"], parsed.get("cliPaths")));
@@ -161,21 +223,28 @@ impl Core {
         }
         out.insert("autoCheckUpdates".into(), parsed.get("autoCheckUpdates").filter(|v| !v.is_null()).cloned().unwrap_or(json!(true)));
         out.insert("autoDownloadUpdates".into(), parsed.get("autoDownloadUpdates").filter(|v| !v.is_null()).cloned().unwrap_or(json!(false)));
-        // Budget limits only come from the user's file: a repo cannot relax them
-        out.insert("cowork".into(), crate::cowork_shared::sanitize_cowork_settings(global.get("cowork")));
+        // Where node worktrees go comes only from the user's file: a repo cannot point it elsewhere.
+        // Cowork 2.0 keeps only this key; the old planning settings are dropped (the legacy inventory reads the raw file).
+        let root = global.pointer("/cowork/worktreeRoot").and_then(Value::as_str).map(|s| crate::util::js_prefix(s.trim(), 500)).unwrap_or_default();
+        // Structured approval per CLI (§3.4): Claude is session-only so on by default, the other two change the CLI's user setup
+        let hook = |agent: &str| global.pointer(&format!("/cowork/structuredApproval/{agent}")).and_then(Value::as_bool).unwrap_or(agent == "claude");
+        out.insert("cowork".into(), json!({ "worktreeRoot": root, "structuredApproval": { "claude": hook("claude"), "codex": hook("codex"), "antigravity": hook("antigravity") } }));
         Value::Object(out)
     }
 
     pub fn save_settings(&self, s: &Value) -> Result<(), String> {
+        let mut s = s.clone();
+        s["proxy"] = sanitize_proxy(s.get("proxy"))?;
         let gp = self.global_settings_path();
         if let Some(d) = gp.parent() {
             fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
-        fs::write(&gp, serde_json::to_string_pretty(s).unwrap()).map_err(|e| e.to_string())?;
+        fs::write(&gp, serde_json::to_string_pretty(&s).unwrap()).map_err(|e| e.to_string())?;
         if let Some(wp) = self.workspace_settings_path() {
             let mut copy = s.clone();
             if let Some(o) = copy.as_object_mut() {
                 o.shift_remove("customAgent");
+                o.shift_remove("proxy");
             }
             // Failing to sync into the project is not fatal: the user's own file is already written
             if let Some(d) = wp.parent() {
@@ -316,12 +385,17 @@ impl Core {
             }
         }
         let mut updated = merge(Some(&current), Some(patch));
+        updated["proxy"] = sanitize_proxy(patch.get("proxy").or(current.get("proxy")))?;
         updated["customAgent"] = agent;
         for key in ["cliPaths", "cliEnabled", "docToolPaths"] {
             updated[key] = merge(current.get(key), patch.get(key));
         }
         self.save_settings(&updated)?;
-        if patch.get("customAgent").is_some() {
+        // agy's hook lives in its user-level hooks.json: add or remove only our entry, right when the switch changes
+        if patch.get("cowork").is_some() || patch.get("cliBypassPermissions").is_some() {
+            let _ = crate::approval_hook::sync_agy(self);
+        }
+        if patch.get("customAgent").is_some() || patch.get("proxy").is_some() {
             self.host.send_all("settings:changed", json!([]));
             crate::remote::on_settings_changed(self);
         }
@@ -333,6 +407,50 @@ impl Core {
 
     pub fn settings_call(self: &Arc<Self>, channel: &str, args: &[Value]) -> Result<Value, String> {
         match channel {
+            "settings:proxyPassword" => {
+                let password = args.first().and_then(Value::as_str).ok_or("Invalid proxy password")?;
+                if password.len() > 8192 || password.contains('\0') {
+                    return Err("Invalid proxy password".into());
+                }
+                let path = self.proxy_secret_path();
+                if password.is_empty() {
+                    match fs::remove_file(path) {
+                        Ok(()) => {},
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                        Err(_) => return Err("Could not clear proxy password".into()),
+                    }
+                } else {
+                    let sealed = wb_secrets::protect(password.as_bytes()).map_err(|_| "Could not encrypt proxy password")?;
+                    fs::write(path, sealed).map_err(|_| "Could not save proxy password")?;
+                }
+                self.host.send_all("settings:changed", json!([]));
+                Ok(Value::Null)
+            }
+            "settings:proxyStatus" => {
+                let proxy = self.load_settings()["proxy"].clone();
+                let sealed = self.proxy_sealed()?;
+                let sessions: Vec<Value> = self.active_session_metas().iter().map(|meta| {
+                    let agent = meta.get("launcherId").and_then(Value::as_str).unwrap_or_else(|| meta["command"].as_str().unwrap_or("shell"));
+                    let current = proxy_snapshot(&effective_proxy(&proxy, agent), &sealed);
+                    json!({ "id": meta["id"], "agent": agent, "started": meta["proxy"], "restartNeeded": meta["proxy"] != current })
+                }).collect();
+                Ok(json!({ "passwordSaved": !sealed.is_empty(), "sessions": sessions }))
+            }
+            "settings:testProxy" => {
+                use std::net::TcpStream;
+                use std::time::{Duration, Instant};
+                let proxy = sanitize_proxy(Some(&json!({ "mode": "custom", "url": arg_str(args, 0) })))?;
+                let url = url::Url::parse(proxy["url"].as_str().unwrap()).map_err(|_| "Invalid proxy URL")?;
+                let addresses = url.socket_addrs(|| None).map_err(|_| "Proxy host could not be resolved")?;
+                let deadline = Instant::now() + Duration::from_secs(3);
+                for address in addresses {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break };
+                    if TcpStream::connect_timeout(&address, remaining).is_ok() {
+                        return Ok(json!({ "ok": true }));
+                    }
+                }
+                Ok(json!({ "ok": false }))
+            }
             "settings:get" => Ok(self.load_settings()),
             "settings:set" => self.settings_set(args.first().unwrap_or(&Value::Null)),
             "settings:getRecentWorkspaces" => Ok(json!(self.get_recent_workspaces())),
@@ -347,6 +465,18 @@ impl Core {
             "settings:testCliPath" => Ok(test_cli_path(arg_str(args, 0))),
             "settings:testDocToolPath" => Ok(test_doc_tool(arg_str(args, 0))),
             _ => Err(format!("No handler registered for '{channel}'")),
+        }
+    }
+
+    pub fn proxy_secret_path(&self) -> PathBuf {
+        self.data_dir.join("proxy-password.enc")
+    }
+
+    pub fn proxy_sealed(&self) -> Result<Vec<u8>, String> {
+        match fs::read(self.proxy_secret_path()) {
+            Ok(sealed) => Ok(sealed),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => Err("Could not read proxy password".into()),
         }
     }
 }
@@ -447,4 +577,97 @@ fn test_doc_tool(raw: &str) -> Value {
         return json!({ "ok": false, "error": "Specified path is a directory, not an executable application" });
     }
     json!({ "ok": true, "version": format!("Valid executable ({})", basename(&target)) })
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    struct QuietHost;
+    impl crate::Host for QuietHost {
+        fn send(&self, _: u32, _: &str, _: Value) {}
+        fn send_all(&self, _: &str, _: Value) {}
+        fn focused_window(&self) -> Option<u32> { None }
+        fn windows(&self) -> Vec<u32> { Vec::new() }
+        fn pick_folder(&self, _: u32, _: &str) -> Option<String> { None }
+        fn pick_file(&self, _: &str) -> Option<String> { None }
+        fn open_path(&self, _: &str) -> Result<(), String> { Ok(()) }
+        fn show_in_folder(&self, _: &str) {}
+        fn open_url(&self, _: &str) {}
+        fn notify(&self, _: &str, _: &str) {}
+        fn set_title(&self, _: u32, _: &str) {}
+        fn open_project_window(&self, _: Option<&str>) -> bool { false }
+        fn open_terminal_window(&self) -> bool { false }
+        fn close_terminal_window(&self) -> bool { false }
+        fn set_title_bar_theme(&self, _: u32, _: &str) -> bool { false }
+    }
+
+    #[test]
+    fn proxy_is_global_only_and_password_never_enters_settings() {
+        let dir = std::env::temp_dir().join(format!("wb-proxy-settings-{}", crate::util::uuid()));
+        let workspace = dir.join("repo");
+        fs::create_dir_all(workspace.join(".workbench")).unwrap();
+        let core = Arc::new(Core {
+            host: Arc::new(QuietHost), data_dir: dir.join("user"), info: Default::default(),
+            windows: std::sync::Mutex::new(crate::core::WindowState { default_workspace: workspace.to_str().unwrap().into(), ..Default::default() }),
+            scanner: crate::session_scan::Scanner::new(dir.join("user")), bg: Default::default(), watchers: Default::default(),
+            pty: Default::default(), cached_sessions: Default::default(), features: Default::default(),
+        });
+        let ws_path = workspace.join(".workbench/settings.json");
+        fs::write(&ws_path, json!({ "proxy": { "mode": "custom", "url": "http://evil:8080", "agents": { "claude": "direct" } } }).to_string()).unwrap();
+        assert_eq!(core.load_settings()["proxy"]["mode"], "inherit");
+        assert_eq!(core.load_settings()["proxy"]["agents"], json!({}));
+        let settings = core.settings_call("settings:set", &[json!({ "proxy": { "mode": "direct", "password": "never-save-me" } })]).unwrap();
+        assert!(!settings.to_string().contains("never-save-me"));
+        assert!(!fs::read_to_string(core.global_settings_path()).unwrap().contains("never-save-me"));
+        assert!(read_json(&ws_path).get("proxy").is_none());
+        assert_eq!(core.load_settings()["proxy"]["mode"], "direct");
+        #[cfg(windows)] {
+            core.settings_call("settings:proxyPassword", &[json!("encrypted-only")]).unwrap();
+            let sealed = core.proxy_sealed().unwrap();
+            assert_ne!(sealed, b"encrypted-only");
+            assert_eq!(wb_secrets::unprotect(&sealed).unwrap(), b"encrypted-only");
+            let status = core.settings_call("settings:proxyStatus", &[]).unwrap();
+            assert_eq!(status["passwordSaved"], true);
+            assert!(!status.to_string().contains("encrypted-only"));
+            assert!(!core.load_settings().to_string().contains("encrypted-only"));
+            assert!(!fs::read_to_string(core.global_settings_path()).unwrap().contains("encrypted-only"));
+            core.settings_call("settings:proxyPassword", &[json!("")]).unwrap();
+            assert!(core.proxy_sealed().unwrap().is_empty());
+        }
+        drop(core);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn proxy_settings_reject_credentials_and_invalid_addresses() {
+        for address in ["http://u:secret@proxy:80", "http://u@proxy:80", "file:///proxy", "socks5://proxy", "http://proxy:0", "http://proxy:99999", "https://proxy:443/path", "https://proxy:443?q=secret", "http://proxy:80/#secret"] {
+            let error = sanitize_proxy(Some(&json!({ "url": address }))).unwrap_err();
+            assert!(!error.contains("secret"));
+        }
+        for address in ["http://localhost:7890", "https://proxy:443", "socks5://[::1]:1080"] {
+            assert!(sanitize_proxy(Some(&json!({ "mode": "custom", "url": address }))).is_ok());
+        }
+        assert!(sanitize_proxy(Some(&json!({ "mode": "bad" }))).is_err());
+        assert!(sanitize_proxy(Some(&json!({ "agents": { "claude": { "mode": "custom", "url": "http://evil:80" } } }))).is_err());
+        assert!(sanitize_proxy(Some(&json!({ "agents": { "claude": "custom" } }))).is_err());
+        let config = sanitize_proxy(Some(&json!({ "password": "secret", "mode": "inherit", "agents": { "claude": "direct" } }))).unwrap();
+        assert!(!config.to_string().contains("secret"));
+        assert_eq!(effective_proxy(&config, "claude")["mode"], "direct");
+        assert_eq!(effective_proxy(&config, "codex")["mode"], "inherit");
+    }
+
+    #[test]
+    fn proxy_snapshot_tracks_only_effective_changes_and_never_credentials() {
+        let proxy = sanitize_proxy(Some(&json!({ "mode": "custom", "url": "http://proxy:8080", "username": "private-user", "bypass": "internal" }))).unwrap();
+        let start = proxy_snapshot(&proxy, b"encrypted-password");
+        assert!(!start.to_string().contains("private-user"));
+        assert!(!start.to_string().contains("encrypted-password"));
+        assert_ne!(start, proxy_snapshot(&proxy, b"new-encrypted-password"));
+        let mut changed = proxy.clone();
+        changed["bypass"] = json!("other");
+        assert_ne!(start, proxy_snapshot(&changed, b"encrypted-password"));
+        changed["mode"] = json!("inherit");
+        assert_eq!(proxy_snapshot(&changed, b"one"), proxy_snapshot(&changed, b"two"));
+    }
 }

@@ -11,7 +11,7 @@ export type Theme = 'light' | 'dark' | 'light-morandi' | 'dark-morandi'
 export type Language = 'en' | 'zh-TW'
 export type SidebarTab = 'dashboard' | 'files' | 'git'
 /** developer＝現行程式碼優先版面；vibe＝對話＋即時成品優先版面 */
-export type UiMode = 'developer' | 'vibe'
+export type UiMode = 'developer' | 'vibe' | 'cowork'
 export type UsageRange = 'all' | '30d' | '7d' | '1d'
 
 /** 要送進終端的文字（例如 markdown code block 的指令）。nonce 遞增即代表有新的一筆。 */
@@ -123,7 +123,8 @@ function initialTheme(): Theme {
 
 function initialUiMode(): UiMode {
   try {
-    if (localStorage.getItem('wb-ui-mode') === 'vibe') return 'vibe'
+    const m = localStorage.getItem('wb-ui-mode')
+    if (m === 'vibe' || m === 'cowork') return m
   } catch {
     /* localStorage 不可用時忽略 */
   }
