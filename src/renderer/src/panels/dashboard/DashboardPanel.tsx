@@ -6,7 +6,7 @@ import type {
   AgentUsageSummary
 } from '../../../../preload/index'
 import AgentMark from '@/components/AgentMark'
-import { IconArchive, IconTrash, IconTerminalBox, IconFolder, IconGripVertical, IconWindowNew, IconGitClone, IconEyeOff, IconFolderMinus, IconShieldCheck } from '@/components/Icons'
+import { IconArchive, IconTrash, IconTerminalBox, IconFolder, IconGripVertical, IconWindowNew, IconGitClone, IconEyeOff, IconFolderMinus, IconShieldCheck, IconPin } from '@/components/Icons'
 import AppleAlertDialog from '@/components/AppleAlertDialog'
 import { openTerminalSession, setDraggedSession, useWorkbench, switchWorkspace, setSidebarTab, openSettings } from '@/store'
 import { useTranslation } from '@/i18n'
@@ -70,6 +70,25 @@ export default function DashboardPanel({
       return []
     }
   })
+  // Pinned folders stay above the rest; within each of the two tiers the usual order applies
+  const [pinnedFolders, setPinnedFolders] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('agent-workbench:dashboard-folder-pins') || '[]')
+      return Array.isArray(saved) ? saved.filter((k) => typeof k === 'string') : []
+    } catch {
+      return []
+    }
+  })
+  const pinnedSet = useMemo(() => new Set(pinnedFolders), [pinnedFolders])
+  const toggleFolderPin = useCallback((key: string) => {
+    setPinnedFolders((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+      try {
+        localStorage.setItem('agent-workbench:dashboard-folder-pins', JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }, [])
   const [draggedFolderKey, setDraggedFolderKey] = useState<string | null>(null)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{
     key: string
@@ -582,8 +601,10 @@ export default function DashboardPanel({
     }
 
     const list = Array.from(map.values())
-    // 排序：若有手動自訂資料夾順序則優先套用，其餘則當前工作區置頂，其次為含有活躍 Session 者，最後依各組中最新 session 排序
+    // 排序：釘選的資料夾永遠在最上面；同一層內若有手動自訂資料夾順序則優先套用，其餘則當前工作區置頂，其次為含有活躍 Session 者，最後依各組中最新 session 排序
     list.sort((a, b) => {
+      const pinA = pinnedSet.has(a.key)
+      if (pinA !== pinnedSet.has(b.key)) return pinA ? -1 : 1
       if (folderOrder.length > 0) {
         const idxA = folderOrder.indexOf(a.key)
         const idxB = folderOrder.indexOf(b.key)
@@ -607,6 +628,7 @@ export default function DashboardPanel({
     customOrder,
     folderOverrides,
     folderOrder,
+    pinnedSet,
     data?.userWorkspaces,
     data?.deletedWorkspaces,
     data?.archivedWorkspaces,
@@ -1064,11 +1086,12 @@ export default function DashboardPanel({
             {folderGroups.map((group) => {
               const isCollapsed = collapsedFolders.has(group.key)
               const isDraggingThis = draggedFolderKey === group.key
+              const isPinned = pinnedSet.has(group.key)
               const dropIndicator = dragOverFolderTarget?.key === group.key ? dragOverFolderTarget.pos : null
               return (
                 <div
                   key={group.key}
-                  className={`dash-folder-group ${group.isCurrentWorkspace ? 'is-current' : ''} ${
+                  className={`dash-folder-group ${group.isCurrentWorkspace ? 'is-current' : ''} ${isPinned ? 'is-pinned' : ''} ${
                     isDraggingThis ? 'is-dragging' : ''
                   } ${dropIndicator ? `drag-over-folder-${dropIndicator}` : ''} ${
                     dragOverFolderKey === group.key ? 'drag-over-folder' : ''
@@ -1201,6 +1224,18 @@ export default function DashboardPanel({
                         {group.isCurrentWorkspace && (
                           <span className="dash-folder-badge current">{t('dashboard.currentWorkspace')}</span>
                         )}
+                        <button
+                          type="button"
+                          className={`dash-folder-pin-btn ${isPinned ? 'pinned' : ''}`}
+                          aria-pressed={isPinned}
+                          title={t(isPinned ? 'dashboard.unpinFolder' : 'dashboard.pinFolder')}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleFolderPin(group.key)
+                          }}
+                        >
+                          <IconPin size={12} />
+                        </button>
                       </div>
                       <span className="dash-folder-tokens" title={`${group.totalTokens.toLocaleString()} tokens`}>
                         {formatTokens(group.totalTokens)} {t('common.tokens')}
@@ -1410,12 +1445,23 @@ export default function DashboardPanel({
           <div
             className="dash-context-menu"
             style={{
-              top: Math.min(folderContextMenu.y, window.innerHeight - 150),
+              top: Math.min(folderContextMenu.y, window.innerHeight - 190),
               left: Math.min(folderContextMenu.x, window.innerWidth - 220)
             }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
+            <button
+              type="button"
+              className="dash-context-item"
+              onClick={() => {
+                toggleFolderPin(folderContextMenu.key)
+                setFolderContextMenu(null)
+              }}
+            >
+              <IconPin size={13} />
+              <span>{t(pinnedSet.has(folderContextMenu.key) ? 'dashboard.unpinFolder' : 'dashboard.pinFolder')}</span>
+            </button>
             {folderContextMenu.path && !folderContextMenu.isCurrentWorkspace && (
               <button
                 type="button"
