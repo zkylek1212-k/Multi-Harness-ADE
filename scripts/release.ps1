@@ -165,9 +165,16 @@ Copy-Item $built.FullName $setupPath -Force
 $signature = Get-Content -Raw "$($built.FullName).sig"
 Copy-Item "$($built.FullName).sig" "$setupPath.sig" -Force
 
+# The updater reads pub_date as RFC 3339 and rejects the whole file otherwise. Without the invariant culture a
+# Windows set to the Taiwan calendar writes the year as 115, and no installed app would ever be offered the update.
+$pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+if ($pubDate -notmatch '^20\d\d-\d\d-\d\dT\d\d:\d\d:\d\dZ$') {
+    Write-Host "[ERROR] pub_date '$pubDate' is not RFC 3339; the updater would reject latest.json." -ForegroundColor Red
+    exit 1
+}
 $latest = @{
     version = $version
-    pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    pub_date = $pubDate
     platforms = @{ "windows-x86_64" = @{ signature = $signature.Trim(); url = "https://github.com/zkylek1212-k/Multi-Harness-ADE/releases/download/$tagName/$setupName" } }
 }
 $latestJson = "release\latest.json"

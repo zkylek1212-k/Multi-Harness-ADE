@@ -1,6 +1,6 @@
 {
   "name": "agent-workbench",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cross-agent developer workbench for Claude Code, Antigravity, and Codex",
   "author": "zkylek1212-k",
   "license": "MIT",
