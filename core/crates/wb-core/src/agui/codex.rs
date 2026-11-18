@@ -10,6 +10,36 @@ pub fn args() -> Vec<String> {
     vec!["app-server".into()]
 }
 
+/// What this harness needs from an app-server, by the schema file that declares it. Checked against the schema the
+/// executable generates itself (`app-server generate-json-schema`), so a Codex upgrade or a fork that drops one of
+/// these fails before a chat starts instead of in the middle of one.
+pub const REQUIRED: [(&str, &str); 15] = [
+    ("ClientRequest.json", "initialize"),
+    ("ClientRequest.json", "thread/start"),
+    ("ClientRequest.json", "thread/resume"),
+    ("ClientRequest.json", "turn/start"),
+    ("ClientRequest.json", "turn/interrupt"),
+    ("ServerNotification.json", "turn/started"),
+    ("ServerNotification.json", "turn/completed"),
+    ("ServerNotification.json", "item/started"),
+    ("ServerNotification.json", "item/completed"),
+    ("ServerNotification.json", "item/agentMessage/delta"),
+    ("ServerNotification.json", "thread/tokenUsage/updated"),
+    ("ServerRequest.json", "item/commandExecution/requestApproval"),
+    ("ServerRequest.json", "item/fileChange/requestApproval"),
+    ("CommandExecutionRequestApprovalResponse.json", "acceptForSession"),
+    ("CommandExecutionRequestApprovalResponse.json", "decline"),
+];
+
+/// The required names a generated schema folder lacks; empty when this harness can drive it
+pub fn missing(schema_dir: &std::path::Path) -> Vec<String> {
+    REQUIRED
+        .iter()
+        .filter(|(file, name)| !std::fs::read_to_string(schema_dir.join(file)).is_ok_and(|t| t.contains(&format!("\"{name}\""))))
+        .map(|(_, name)| name.to_string())
+        .collect()
+}
+
 const INIT: u64 = 1;
 const THREAD: u64 = 2;
 
@@ -287,6 +317,24 @@ mod tests {
         let outs = h.on_line(r#"{"id":2,"result":{"thread":{"id":"th"}}}"#);
         assert!(matches!(&outs[0], Out::Session(s) if s == "th"));
         assert!(matches!(&outs[1], Out::Send(s) if s.contains("turn/start") && s.contains("\"th\"")));
+    }
+
+    #[test]
+    fn missing_lists_what_a_schema_folder_lacks() {
+        let dir = std::env::temp_dir().join(format!("wb-codex-schema-{}", crate::util::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(missing(&dir).len(), REQUIRED.len());
+        for (file, name) in REQUIRED {
+            let path = dir.join(file);
+            let mut t = std::fs::read_to_string(&path).unwrap_or_default();
+            t.push_str(&format!("\"{name}\"
+"));
+            std::fs::write(&path, t).unwrap();
+        }
+        assert!(missing(&dir).is_empty());
+        std::fs::write(dir.join("ServerRequest.json"), "\"item/fileChange/requestApproval\"").unwrap();
+        assert_eq!(missing(&dir), ["item/commandExecution/requestApproval"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

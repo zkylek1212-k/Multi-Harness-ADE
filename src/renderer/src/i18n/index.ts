@@ -30,7 +30,10 @@ export const translations = {
       notConfigured: 'Set this extension path in Settings → Agents first.',
       file: 'Relative file name', newFile: 'New file', open: 'Open / Create', reload: 'Reload file',
       newHint: 'New file — save to create it.', saved: 'File saved', unsaved: 'Unsaved changes', discard: 'Discard changes',
-      loadError: 'Could not load Custom Agent settings', launch: 'Launch Session →'
+      loadError: 'Could not load Custom Agent settings', launch: 'Launch Session →',
+      protocol: 'Chat mode protocol',
+      protocolHint: 'For Cowork chat mode. A Codex fork keeps app-server; Workbench checks its protocol before the first chat.',
+      protocol_pty: 'Terminal only', protocol_codex_app_server: 'Codex app-server', protocol_claude_stream_json: 'Claude stream-json', protocol_acp: 'Agent Client Protocol (ACP)'
     },
     common: {
       ok: 'OK',
@@ -758,7 +761,10 @@ export const translations = {
       notConfigured: '請先在「設定 → Agent」指定此類擴充的路徑。',
       file: '相對檔名', newFile: '新增檔案', open: '開啟／建立', reload: '重新載入檔案',
       newHint: '新檔案 — 儲存後才會建立。', saved: '檔案已儲存', unsaved: '尚有未儲存的變更', discard: '捨棄變更',
-      loadError: '無法載入自訂 Agent 設定', launch: '啟動工作階段 →'
+      loadError: '無法載入自訂 Agent 設定', launch: '啟動工作階段 →',
+      protocol: '對話模式的協議',
+      protocolHint: '給 Cowork 的對話模式用。Codex 的 fork 選 app-server；第一次對話前 Workbench 會先檢查它的協議。',
+      protocol_pty: '只用終端', protocol_codex_app_server: 'Codex app-server', protocol_claude_stream_json: 'Claude stream-json', protocol_acp: 'Agent Client Protocol（ACP）'
     },
     common: {
       ok: '確定',

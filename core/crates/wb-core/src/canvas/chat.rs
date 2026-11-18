@@ -162,6 +162,7 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
             Box::new(claude::Claude::new(&thread))
         }
         "codex-app-server" => {
+            codex_protocol_ok(core, &command, &args, &env)?;
             args.extend(crate::agui::codex::args());
             Box::new(Codex::new(&thread, &cwd, resume, CODEX_SANDBOX))
         }
@@ -259,6 +260,35 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
         }
         _ => Err(err("invalid", format!("Unknown chat operation: {}", js_prefix(op, 40)))),
     }
+}
+
+/// The executable's own schema must have everything the Codex harness uses (§4.2). Generated once per executable
+/// version (path, size, modified time) into the data dir; a later launch of the same file only checks the marker.
+fn codex_protocol_ok(core: &Core, command: &str, pre: &[String], env: &[(String, String)]) -> R<()> {
+    use sha2::{Digest, Sha256};
+    let meta = std::fs::metadata(command).ok();
+    let stamp = format!("{command}|{:?}|{:?}", meta.as_ref().map(|m| m.len()), meta.as_ref().and_then(|m| m.modified().ok()));
+    let hash: String = Sha256::digest(stamp.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let dir = core.data_dir.join("agui-schema").join(hash);
+    if dir.join("ok").exists() {
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| err("invalid", e.to_string()))?;
+    let mut args = pre.to_vec();
+    args.extend(["app-server", "generate-json-schema", "--out"].map(String::from));
+    args.push(p(&dir));
+    let r = wb_proc::run_process(&wb_proc::RunSpec { command: command.into(), args, cwd: p(&dir), stdin: String::new(), timeout_ms: 60_000, max_bytes: 1 << 20, env: Some(env.to_vec()) }, &wb_proc::CancelToken::default());
+    if r.code != Some(0) {
+        let why = r.spawn_error.unwrap_or_else(|| js_prefix(r.stderr.trim(), 400));
+        return Err(err("invalid", format!("{command} could not describe its app-server protocol: {why}")));
+    }
+    let miss = crate::agui::codex::missing(&dir);
+    if !miss.is_empty() {
+        return Err(err("invalid", format!("This Codex cannot run in chat mode; its app-server lacks: {}", miss.join(", "))));
+    }
+    let _ = std::fs::write(dir.join("ok"), "");
+    Ok(())
 }
 
 /// The CLI's own TUI resuming a chat node's session

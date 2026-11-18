@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use crate::util::{basename, dirname, resolve};
 
 pub const CUSTOM_AGENT_ID: &str = "custom-agent";
+/// How a chat node talks to the custom agent (cowork-agui-implement.md §2.3); "pty" = terminal only
+pub const PROTOCOLS: [&str; 4] = ["pty", "codex-app-server", "claude-stream-json", "acp"];
 
 pub fn sanitize_custom_agent(raw: Option<&Value>) -> Value {
     let empty = json!({});
@@ -22,6 +24,7 @@ pub fn sanitize_custom_agent(raw: Option<&Value>) -> Value {
         "name": if name.is_empty() { "Custom Agent".to_string() } else { name },
         "command": text(c.get("command")),
         "args": args,
+        "protocol": Some(text(c.get("protocol"))).filter(|p| PROTOCOLS.contains(&p.as_str())).unwrap_or_else(|| "pty".into()),
         "resources": { "skill": r("skill"), "mcp": r("mcp"), "plugin": r("plugin"), "hook": r("hook") }
     })
 }

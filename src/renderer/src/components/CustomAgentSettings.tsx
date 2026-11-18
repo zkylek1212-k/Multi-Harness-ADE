@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from '@/i18n'
-import { CUSTOM_RESOURCE_KINDS, sanitizeCustomAgent, type CustomAgentConfig } from '../../../shared/customAgent'
+import { CUSTOM_PROTOCOLS, CUSTOM_RESOURCE_KINDS, sanitizeCustomAgent, type CustomAgentConfig, type CustomProtocol } from '../../../shared/customAgent'
 import { IconFolderOpen } from './Icons'
 
 export default function CustomAgentSettings({ value, onChange }: {
@@ -51,6 +51,12 @@ export default function CustomAgentSettings({ value, onChange }: {
             <label className="custom-agent-field">{t('customAgent.args')}
               <textarea className="macos-input" rows={3} value={c.args.join('\n')} onChange={(e) => update({ args: e.target.value.split('\n') })} />
             </label>
+            <label className="custom-agent-field">{t('customAgent.protocol')}
+              <select className="macos-input" value={c.protocol} onChange={(e) => update({ protocol: e.target.value as CustomProtocol })}>
+                {CUSTOM_PROTOCOLS.map((p) => <option key={p} value={p}>{t(`customAgent.protocol_${p.replace(/-/g, '_')}`)}</option>)}
+              </select>
+            </label>
+            <p className="macos-row-sub">{t('customAgent.protocolHint')}</p>
             <p className="macos-row-sub">{t('customAgent.pathsHint')}</p>
             {CUSTOM_RESOURCE_KINDS.map((kind) => <label key={kind} className="custom-agent-field">
               {t(`customAgent.${kind}Path`)}
