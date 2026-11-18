@@ -77,6 +77,9 @@ const api = {
   // 設定管理（CLI 路徑等）—— main/ipc/settings.ts
   settings: {
     proxyPassword: (password: string): Promise<void> => ipcRenderer.invoke('settings:proxyPassword', password),
+    /** The Bearer key of the custom agent's AG-UI endpoint; '' clears it. Stored encrypted, never read back. */
+    customAgentKey: (key: string): Promise<void> => ipcRenderer.invoke('settings:customAgentKey', key),
+    customAgentKeySet: (): Promise<boolean> => ipcRenderer.invoke('settings:customAgentKeySet'),
     proxyStatus: (): Promise<ProxyStatus> => ipcRenderer.invoke('settings:proxyStatus'),
     testProxy: (url: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('settings:testProxy', url),
     get: (): Promise<WorkbenchSettings> => ipcRenderer.invoke('settings:get'),

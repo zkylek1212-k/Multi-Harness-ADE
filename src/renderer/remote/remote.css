@@ -1910,3 +1910,7 @@ details.cw-card > summary {
 .cw-scope-review code {
   word-break: break-all;
 }
+
+/* chat Bots (cowork-agui-implement.md P4): the recent conversation, user words on the right */
+.chat-user { align-self: flex-end; max-width: 85%; margin: 0; padding: 8px 12px; border-radius: 14px; background: var(--fill, rgba(127, 127, 127, 0.14)); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-text { margin: 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -593,7 +593,8 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
     let desktop = origin == Origin::Desktop;
     let out = match op {
         // The user's own message to an agent of the group: pasted into its terminal like typing it, then sent
-        "chat.send" if desktop => {
+        // From the phone too: a chat node's next turn, or a paste into an idle terminal (the same as typing it)
+        "chat.send" => {
             let text = s(req, "text");
             if text.trim().is_empty() || text.len() > MAX_TEXT {
                 return Err(err("invalid", "Empty or too long"));
@@ -751,7 +752,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
             return Ok(Value::Null);
         }
         // The user's answer to ask_person goes back to the bot as the user's own message
-        "ask.answer" if desktop => {
+        "ask.answer" => {
             let text = s(req, "text").trim();
             if text.is_empty() || text.len() > MAX_TEXT {
                 return Err(err("invalid", "Empty or too long"));
@@ -776,6 +777,14 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
     };
     emit(core, repo, &ch);
     Ok(out)
+}
+
+/// Cards of the group that wait for the user: held agent messages, merge requests, open ask_person questions
+pub(super) fn waiting(st: &RepoState, c: &Channel) -> usize {
+    let relays = st.msgs.get(&c.id).map(|m| m.iter().filter(|m| m.state == "pending-approval").count()).unwrap_or(0);
+    let merges = st.merge_reqs.values().filter(|r| r.channel == c.id).count();
+    let asks = st.asks.values().filter(|a| st.rt.get(&key(&c.id, &a.node)).and_then(|r| r.generation.as_deref()) == Some(a.generation.as_str())).count();
+    relays + merges + asks
 }
 
 /// What the views add for teams: the teams, pending relay and merge cards, and per-node role, task and unread
@@ -1040,6 +1049,8 @@ pub fn mcp_call(core: &Arc<Core>, token: &str, tool: &str, args: &Value) -> Resu
                 }
                 let id = short_id();
                 st.asks.insert(k, Ask { id: id.clone(), node: me.clone(), generation, question, choices, at: now_ms() });
+                let who = c.nodes.iter().find(|n| n.id == me).map(|n| n.agent.clone()).unwrap_or_default();
+                crate::remote::on_chat_waiting(core, &format!("{ch}-{me}-ask"), &who, "question");
                 if let Some(c) = st.channels.get_mut(&ch) {
                     push_event(c, json!({ "t": "ask", "at": now_ms(), "node": me, "id": id }));
                     let _ = repo.save(c);

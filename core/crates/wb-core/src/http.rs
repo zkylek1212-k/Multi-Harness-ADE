@@ -34,6 +34,33 @@ pub fn post_bytes_no_redirect(url: &str, headers: &[(&str, &str)], body: &[u8], 
     req.send(body).map(|r| r.status().as_u16()).map_err(|e| e.to_string())
 }
 
+/// A streamed POST (an AG-UI run): each response line goes to `on_line` until it returns false or the body ends. No
+/// overall timeout, a run can take long; no redirects, so an allowed endpoint cannot send the thread elsewhere.
+/// A status outside 2xx comes back with the start of its body.
+pub fn post_lines(url: &str, headers: &[(&str, &str)], body: &str, mut on_line: impl FnMut(&str) -> bool) -> Result<(u16, String), String> {
+    use std::io::BufRead;
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).timeout_connect(Some(Duration::from_secs(15))).build().into();
+    let mut req = agent.post(url).header("User-Agent", USER_AGENT).header("Content-Type", "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let mut r = req.send(body.as_bytes()).map_err(|e| e.to_string())?;
+    let status = r.status().as_u16();
+    let reader = r.body_mut().as_reader();
+    if !(200..300).contains(&status) {
+        let mut head = String::new();
+        let _ = reader.take(300).read_to_string(&mut head);
+        return Ok((status, head));
+    }
+    for line in std::io::BufReader::new(reader).lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if !on_line(&line) {
+            break;
+        }
+    }
+    Ok((status, String::new()))
+}
+
 pub fn get(url: &str, headers: &[(&str, &str)]) -> Result<Response, String> {
     let mut req = agent().get(url).header("User-Agent", USER_AGENT);
     for (k, v) in headers {

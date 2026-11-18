@@ -56,6 +56,13 @@ pub fn on_canvas_update(core: &Core, update: &Value) {
     }
 }
 
+/// `what`: a short kind ("approval: shell", "question"), never content
+pub fn on_chat_waiting(core: &Core, id: &str, who: &str, what: &str) {
+    if let Some(f) = core.features.get() {
+        f.remote.bridge.push_waiting(id, who, what);
+    }
+}
+
 pub fn on_settings_changed(core: &Core) {
     if let Some(f) = core.features.get() {
         f.remote.bridge.schedule_state();

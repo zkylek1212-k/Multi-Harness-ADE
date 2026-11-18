@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::agui::session::{Chat, Sink, Spawn};
 use crate::agui::transcript::{Entry, Transcript};
-use crate::agui::{acp::Acp, claude, codex::Codex, Event, Harness, Out};
+use crate::agui::{acp::Acp, claude, codex::Codex, http as agui_http, Event, Harness, Out};
 
 use super::*;
 
@@ -25,6 +25,7 @@ pub fn protocol(core: &Core, agent: &str) -> Option<&'static str> {
             Some("claude-stream-json") => Some("claude-stream-json"),
             Some("codex-app-server") => Some("codex-app-server"),
             Some("acp") => Some("acp"),
+            Some(agui_http::PROTOCOL) => Some(agui_http::PROTOCOL),
             _ => None,
         },
         _ => None,
@@ -110,7 +111,11 @@ fn on_out(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &s
     }
     match out {
         Out::Ui(e) => live(core, repo, ch, nd, json!({ "event": e, "entry": entry })),
-        Out::Approval(a) => live(core, repo, ch, nd, json!({ "approval": a })),
+        Out::Approval(a) => {
+            let who = repo.st.lock().unwrap().channels.get(ch).and_then(|c| c.nodes.iter().find(|n| n.id == nd)).map(|n| n.agent.clone()).unwrap_or_default();
+            crate::remote::on_chat_waiting(core, &format!("{ch}-{nd}"), &who, &format!("approval: {}", js_prefix(&a.tool, 40)));
+            live(core, repo, ch, nd, json!({ "approval": a }));
+        }
         _ => {}
     }
     if refresh {
@@ -166,6 +171,9 @@ fn on_ended(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: 
 /// Starts the node's CLI headless; resumes the node's last session when it has one. Caller holds no repo lock.
 pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) -> R<()> {
     let proto = protocol(core, &node.agent).ok_or_else(|| err("invalid", format!("{} has no chat mode", node.agent)))?;
+    if proto == agui_http::PROTOCOL {
+        return connect(core, repo, ch, node);
+    }
     let cwd = node.worktree.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| p(&repo.root));
     let (command, mut args, env) = core.agent_process(&node.agent).map_err(|e| err("invalid", e))?;
     let thread = key(ch, &node.id);
@@ -232,6 +240,50 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
     }
     drop(st);
     // Mail that came while it was starting
+    team::deliver(core, repo, ch);
+    Ok(())
+}
+
+/// An external AG-UI agent (§4.5): no process, no worktree tools, no team MCP; the thread so far comes from the transcript
+fn connect(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) -> R<()> {
+    let c = crate::custom_agent::sanitize_custom_agent(core.load_settings().get("customAgent"));
+    let url = c["command"].as_str().unwrap_or("").trim().to_string();
+    if c["enabled"] != json!(true) {
+        return Err(err("invalid", "Custom Agent is disabled"));
+    }
+    agui_http::url_ok(&url, c["allowHttp"] == json!(true)).map_err(|e| err("invalid", e))?;
+    let bearer = core.custom_agent_key().map_err(|e| err("invalid", e))?;
+    let generation = uuid();
+    let history: Vec<(String, String)> = {
+        let mut st = repo.st.lock().unwrap();
+        let h = repo.transcripts(&mut st, ch).get(&node.id).map(|t| {
+            t.entries.iter().filter_map(|e| match e {
+                Entry::User { text, .. } => Some(("user".to_string(), text.clone())),
+                Entry::Text { text, .. } => Some(("assistant".to_string(), text.clone())),
+                _ => None,
+            }).collect()
+        }).unwrap_or_default();
+        *st.rt.entry(key(ch, &node.id)).or_default() = NodeRt { status: "creating", generation: Some(generation.clone()), ..Default::default() };
+        h
+    };
+    let harness = Box::new(agui_http::AguiHttp::new(&key(ch, &node.id), history));
+    let (c1, r1, ch1, nd1, g1) = (core.clone(), repo.clone(), ch.to_string(), node.id.clone(), generation.clone());
+    let sink: Sink = Arc::new(move |o| on_out(&c1, &r1, &ch1, &nd1, &g1, o));
+    let (c2, r2, ch2, nd2, g2) = (core.clone(), repo.clone(), ch.to_string(), node.id.clone(), generation.clone());
+    let chat = Chat::connect(&url, &bearer, harness, sink, move |code, stderr| on_ended(&c2, &r2, &ch2, &nd2, &g2, code, stderr));
+    {
+        let mut st = repo.st.lock().unwrap();
+        if let Some(rt) = st.rt.get_mut(&key(ch, &node.id)) {
+            if rt.generation.as_deref() == Some(generation.as_str()) {
+                rt.chat = Some(chat);
+                rt.status = "running";
+            }
+        }
+        if let Some(c) = st.channels.get_mut(ch) {
+            push_event(c, json!({ "t": "node-started", "at": now_ms(), "node": node.id }));
+            let _ = repo.save(c);
+        }
+    }
     team::deliver(core, repo, ch);
     Ok(())
 }

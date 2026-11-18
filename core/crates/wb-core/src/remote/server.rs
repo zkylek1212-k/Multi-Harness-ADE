@@ -58,8 +58,8 @@ const PAIR_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // without 0/O 
 const PUSH_SUBJECT: &str = "https://github.com/zkylek1212-k/Multi-Harness-ADE";
 const MAX_BACKLOG: usize = 8 * 1024 * 1024;
 /// Cowork 2.0 on the phone (cowork2.0-implement.md §3.9): read, answer approvals, send a message, stage-1 stop. Everything else is desktop-only.
-pub const PHONE_CANVAS_OPS: [&str; 9] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
-pub const PHONE_AUDITED_OPS: [&str; 7] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
+pub const PHONE_CANVAS_OPS: [&str; 13] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause", "chat.transcript", "chat.send", "chat.answer", "ask.answer"];
+pub const PHONE_AUDITED_OPS: [&str; 10] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause", "chat.send", "chat.answer", "ask.answer"];
 const BUILTIN: [(&str, &str, &str); 5] = [("claude", "Claude Code", "agent"), ("codex", "Codex", "agent"), ("antigravity", "Antigravity", "agent"), ("powershell", "PowerShell", "shell"), ("cmd", "Command Prompt", "shell")];
 
 // A preview iframe is on another port, maybe another computer, so frame-src cannot be just 'self'. A framed page reaches nothing here.
@@ -1271,6 +1271,13 @@ impl Bridge {
         self.push(id, "approval", json!({ "title": format!("⏳ {title} 等待你的回覆"), "body": body, "tag": format!("approval-{id}"), "url": format!("/#s={id}") }));
     }
 
+    /// A chat Bot waits for the user (cowork-agui-implement.md §7.1): the push says who and what kind, never the
+    /// command, the diff or the message
+    pub fn push_waiting(&self, id: &str, who: &str, what: &str) {
+        let who = js_prefix(who, 60);
+        self.push(id, "approval", json!({ "title": format!("⏳ {who} 等待你的回覆"), "body": what, "tag": format!("chat-{id}"), "url": "/" }));
+    }
+
     /// A canvas change, stripped of file contents (§3.9: the phone gets file names and line counts, never code)
     pub fn on_canvas(&self, update: &Value) {
         if self.clients.lock().unwrap().is_empty() {
@@ -1327,7 +1334,7 @@ fn canvas_audit(op: &str, req: &Value, result: &Value, device_id: Option<&str>) 
     let mut row = json!({
         "deviceId": device_id, "op": js_prefix(op, 40), "channelId": id("channelId"), "nodeId": id("nodeId"),
         "requestId": id("requestId"), "sessionGeneration": id("sessionGeneration"), "textLength": len("text"), "reasonLength": len("reason"), "ok": result["ok"],
-        "messageId": id("messageId"), "teamId": id("teamId"),
+        "messageId": id("messageId"), "teamId": id("teamId"), "approvalId": id("approvalId"), "askId": id("askId"), "to": id("to"),
     });
     if result["ok"] != json!(true) {
         row["code"] = result["code"].clone();

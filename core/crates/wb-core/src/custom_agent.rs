@@ -9,7 +9,7 @@ use crate::util::{basename, dirname, resolve};
 
 pub const CUSTOM_AGENT_ID: &str = "custom-agent";
 /// How a chat node talks to the custom agent (cowork-agui-implement.md §2.3); "pty" = terminal only
-pub const PROTOCOLS: [&str; 4] = ["pty", "codex-app-server", "claude-stream-json", "acp"];
+pub const PROTOCOLS: [&str; 5] = ["pty", "codex-app-server", "claude-stream-json", "acp", "agui-http"];
 
 pub fn sanitize_custom_agent(raw: Option<&Value>) -> Value {
     let empty = json!({});
@@ -25,6 +25,8 @@ pub fn sanitize_custom_agent(raw: Option<&Value>) -> Value {
         "command": text(c.get("command")),
         "args": args,
         "protocol": Some(text(c.get("protocol"))).filter(|p| PROTOCOLS.contains(&p.as_str())).unwrap_or_else(|| "pty".into()),
+        // agui-http: `command` is the endpoint; plain http only when the user allowed it (§4.5)
+        "allowHttp": c.get("allowHttp") == Some(&json!(true)),
         "resources": { "skill": r("skill"), "mcp": r("mcp"), "plugin": r("plugin"), "hook": r("hook") }
     })
 }

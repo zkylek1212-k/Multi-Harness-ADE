@@ -4,7 +4,25 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use wb_proc::{spawn_lines, LineProcess};
 
+use super::http::HttpLines;
 use super::{Harness, Out};
+
+/// Where the harness's lines go: a CLI's stdin, or an AG-UI endpoint
+enum Transport {
+    Proc(Arc<LineProcess>),
+    Http(Arc<HttpLines>),
+}
+
+impl Transport {
+    fn write_line(&self, line: &str) {
+        match self {
+            Transport::Proc(p) => {
+                p.write_line(line);
+            }
+            Transport::Http(h) => h.write_line(line),
+        }
+    }
+}
 
 pub type Sink = Arc<dyn Fn(Out) + Send + Sync>;
 
@@ -12,7 +30,7 @@ const STDERR_KEEP: usize = 20;
 
 struct Inner {
     h: Mutex<Box<dyn Harness>>,
-    proc: OnceLock<Arc<LineProcess>>,
+    proc: OnceLock<Transport>,
     /// Lines the harness produced before the process handle existed
     early: Mutex<Vec<String>>,
     stderr: Mutex<Vec<String>>,
@@ -24,9 +42,7 @@ impl Inner {
         for o in outs {
             match o {
                 Out::Send(line) => match self.proc.get() {
-                    Some(p) => {
-                        p.write_line(&line);
-                    }
+                    Some(p) => p.write_line(&line),
                     None => self.early.lock().unwrap().push(line),
                 },
                 other => (self.sink)(other),
@@ -72,13 +88,32 @@ impl Chat {
                 on_exit(code, tail);
             },
         )?;
-        let _ = inner.proc.set(proc.clone());
+        let _ = inner.proc.set(Transport::Proc(proc.clone()));
         for line in std::mem::take(&mut *inner.early.lock().unwrap()) {
             proc.write_line(&line);
         }
         let outs = inner.h.lock().unwrap().start();
         inner.dispatch(outs);
         Ok(Arc::new(Chat { inner }))
+    }
+
+    /// An external AG-UI agent (agui/http.rs): no process; `kill` ends it the way a process exit would
+    pub fn connect(url: &str, key: &str, harness: Box<dyn Harness>, sink: Sink, on_exit: impl FnOnce(Option<i32>, String) + Send + 'static) -> Arc<Chat> {
+        let inner = Arc::new(Inner { h: Mutex::new(harness), proc: OnceLock::new(), early: Mutex::default(), stderr: Mutex::default(), sink });
+        let a = inner.clone();
+        let lines = HttpLines::new(
+            url,
+            key,
+            Arc::new(move |line: String| {
+                let outs = a.h.lock().unwrap().on_line(&line);
+                a.dispatch(outs);
+            }),
+            Box::new(on_exit),
+        );
+        let _ = inner.proc.set(Transport::Http(lines));
+        let outs = inner.h.lock().unwrap().start();
+        inner.dispatch(outs);
+        Arc::new(Chat { inner })
     }
 
     fn with(&self, f: impl FnOnce(&mut dyn Harness) -> Vec<Out>) {
@@ -99,12 +134,17 @@ impl Chat {
     }
 
     pub fn pid(&self) -> Option<u32> {
-        self.inner.proc.get().map(|p| p.pid)
+        match self.inner.proc.get() {
+            Some(Transport::Proc(p)) => Some(p.pid),
+            _ => None,
+        }
     }
 
     pub fn kill(&self) {
-        if let Some(p) = self.inner.proc.get() {
-            p.kill();
+        match self.inner.proc.get() {
+            Some(Transport::Proc(p)) => p.kill(),
+            Some(Transport::Http(h)) => h.kill(),
+            None => {}
         }
     }
 }

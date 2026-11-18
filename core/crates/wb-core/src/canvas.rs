@@ -592,7 +592,8 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 .channels
                 .values()
                 .map(|c| {
-                    let pending = c.nodes.iter().filter(|n| st.rt.get(&key(&c.id, &n.id)).is_some_and(|r| r.approval.is_some())).count() + c.nodes.iter().map(|n| chat::pending(&st, &c.id, &n.id)).sum::<usize>();
+                    // Everything that waits for the user: CLI approvals of both kinds, and the group's cards
+                    let pending = c.nodes.iter().filter(|n| st.rt.get(&key(&c.id, &n.id)).is_some_and(|r| r.approval.is_some())).count() + c.nodes.iter().map(|n| chat::pending(&st, &c.id, &n.id)).sum::<usize>() + team::waiting(&st, c);
                     let updated = c.events.last().and_then(|e| e["at"].as_f64()).unwrap_or(0.0);
                     // The first node is the conversation's own agent (its lead)
                     let lead = c.nodes.first().map(|n| {
@@ -1126,8 +1127,24 @@ pub fn phone_call(core: &Arc<Core>, ws: &str, op: &str, req: &Value) -> Value {
     if !crate::remote::server::PHONE_CANVAS_OPS.contains(&op) {
         return json!({ "ok": false, "code": "not-allowed" });
     }
-    wrap(dispatch(core, ws, op, req, Origin::Phone))
+    let mut out = wrap(dispatch(core, ws, op, req, Origin::Phone));
+    // A conversation on the phone is its recent part; the desktop keeps the rest
+    if op == "chat.transcript" {
+        let cut = |t: &mut Value| {
+            if let Some(e) = t.get_mut("entries").and_then(Value::as_array_mut) {
+                let n = e.len().saturating_sub(PHONE_ENTRIES);
+                e.drain(..n);
+            }
+        };
+        match out["data"].get("entries") {
+            Some(_) => cut(&mut out["data"]),
+            None => out["data"].as_object_mut().into_iter().flat_map(|m| m.values_mut()).for_each(cut),
+        }
+    }
+    out
 }
+
+const PHONE_ENTRIES: usize = 40;
 
 /// File contents never go to a phone (§3.9): hook cards keep names and line counts only. Team messages keep their
 /// first 200 characters, enough to decide on a relay card (cowork-team-implement.md §5.4).
@@ -1139,6 +1156,24 @@ pub fn for_phone(mut v: Value) -> Value {
                     if let Some(Value::String(t)) = o.get_mut("text") {
                         *t = js_prefix(t, 200);
                     }
+                }
+                // Conversation entries (agui/transcript.rs): what a tool read or wrote stays on the computer
+                match o.get("kind").and_then(Value::as_str) {
+                    Some("tool") => {
+                        o.remove("args");
+                        o.remove("output");
+                    }
+                    Some("text" | "user") if !o.contains_key("teamId") => {
+                        if let Some(Value::String(t)) = o.get_mut("text") {
+                            *t = js_prefix(t, 1000);
+                        }
+                    }
+                    Some("approval") => {
+                        if let Some(Value::String(t)) = o.get_mut("summary") {
+                            *t = js_prefix(t, 200);
+                        }
+                    }
+                    _ => {}
                 }
                 if let Some(Value::Object(h)) = o.get_mut("hook") {
                     h.remove("raw");

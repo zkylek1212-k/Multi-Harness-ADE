@@ -7,6 +7,7 @@ use serde_json::Value;
 pub mod acp;
 pub mod claude;
 pub mod codex;
+pub mod http;
 pub mod session;
 pub mod transcript;
 

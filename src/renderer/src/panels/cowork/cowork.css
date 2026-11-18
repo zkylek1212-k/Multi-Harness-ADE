@@ -197,3 +197,11 @@
 .cw-memory { font-size: 12.5px; background: var(--cw-side); border-radius: 8px; padding: 6px 10px; }
 .cw-by { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--cw-line); }
 .cw-pick { border: 0; cursor: pointer; }
+
+/* bots page */
+.cw-nav { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; border-radius: 8px; padding: 8px 10px; min-height: 34px; cursor: pointer; text-align: left; margin-bottom: 8px; }
+.cw-nav:hover, .cw-nav.on { background: var(--cw-hover); }
+.cw-bots-page { overflow-y: auto; }
+.cw-home-inner.wide { max-width: 860px; }
+.cw-bots-page .cw-bot { cursor: default; }
+.cw-newbot .custom-agent-settings { margin: 0; }

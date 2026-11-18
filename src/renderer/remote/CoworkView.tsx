@@ -4,6 +4,7 @@ import type { RemoteConnection } from './conn'
 import { AgentMark, IWarning } from './icons'
 import { ago, t, type Key } from './i18n'
 import { ConfirmSheet, NavBar } from './ui'
+import ChatBlock from './ChatBlock'
 
 // 手機版 Cowork 2.0（cowork2.0-implement.md §3.9）：Channel 清單、節點狀態與審批、事件時間軸、送訊息、第一段停止。
 // 只用 PHONE_CANVAS_OPS；建立／關閉節點、合併、捨棄、全部結束、解除停止只在桌面。點節點進現有的終端畫面。
@@ -171,7 +172,8 @@ export default function CoworkView({
                       )}
                     </div>
                   )}
-                  {rt?.status === 'running' && rt.sessionGeneration && !a && (
+                  {n.mode === 'chat' && <ChatBlock conn={conn} windowId={windowId} view={view} nodeId={n.id} run={run} busy={busy} />}
+                  {n.mode !== 'chat' && rt?.status === 'running' && rt.sessionGeneration && !a && (
                     message?.node === n.id ? (
                       <div className="field">
                         <textarea className="cw-input" rows={3} maxLength={16000} value={message.text} placeholder={t('cv_messagePlaceholder')} onChange={(e) => setMessage({ node: n.id, text: e.target.value })} />

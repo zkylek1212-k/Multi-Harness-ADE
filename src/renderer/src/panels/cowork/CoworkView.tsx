@@ -8,6 +8,7 @@ import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelSummary, ChannelView, NodeMode, StopState } from '../../../../shared/canvas'
+import BotsView from './BotsView'
 import Conversation, { leadOf } from './Conversation'
 import Workspace from './Workspace'
 import { ago, BUILTIN_AGENTS, CHAT_AGENTS, markOf, recall, remember, type CanvasCall } from './types'
@@ -138,6 +139,10 @@ export default function CoworkView(): JSX.Element {
   const [busy, setBusy] = useState(false)
   /** The Bot shown in the conversation; null = its lead */
   const [focus, setFocus] = useState<string | null>(null)
+  /** With no conversation open: the home page or the Bots page */
+  const [page, setPage] = useState<'home' | 'bots'>('home')
+  /** Bumped when a Bot was saved, so its name and chat mode show up without a reload */
+  const [botsVersion, setBotsVersion] = useState(0)
   const activeRef = useRef(active)
   activeRef.current = active
   /** A terminal conversation's first message, waiting for its CLI prompt */
@@ -167,12 +172,12 @@ export default function CoworkView(): JSX.Element {
       .catch(() => {})
     window.api.settings
       .get()
-      .then((s) => alive && setChatCustom(['claude-stream-json', 'codex-app-server', 'acp'].includes((s as { customAgent?: { protocol?: string } }).customAgent?.protocol ?? '')))
+      .then((s) => alive && setChatCustom(['claude-stream-json', 'codex-app-server', 'acp', 'agui-http'].includes((s as { customAgent?: { protocol?: string } }).customAgent?.protocol ?? '')))
       .catch(() => {})
     return () => {
       alive = false
     }
-  }, [workspaceRoot, loadList])
+  }, [workspaceRoot, loadList, botsVersion])
 
   useEffect(() => {
     remember(storeKey, active)
@@ -259,7 +264,7 @@ export default function CoworkView(): JSX.Element {
           <button className="cw-modeback" title={t('cw.backToDeveloper')} onClick={() => setUiMode('developer')}>←</button>
           <b>Cowork</b>
           <div className="cw-grow" />
-          <button className="cw-icon" aria-label={t('cw.newConversation')} title={t('cw.newConversation')} onClick={() => setActive(null)}>＋</button>
+          <button className="cw-icon" aria-label={t('cw.newConversation')} title={t('cw.newConversation')} onClick={() => { setPage('home'); setActive(null) }}>＋</button>
         </div>
         <label className="cw-search">
           <span className="cw-sr">{t('cw.search')}</span>
@@ -286,6 +291,10 @@ export default function CoworkView(): JSX.Element {
           })}
         </div>
         <div className="cw-side-foot">
+          <button className={`cw-nav ${!active && page === 'bots' ? 'on' : ''}`} onClick={() => { setPage('bots'); setActive(null) }}>
+            <span>{t('cw.bots')}</span>
+            {channels.some((c) => c.pendingApprovals > 0) && <span className="cw-badge warn">{t('cw.needsYou')}</span>}
+          </button>
           {stop?.requested ? (
             <div className="cw-stopped">
               <b>{t('cw.stoppedAll')}</b>
@@ -302,6 +311,19 @@ export default function CoworkView(): JSX.Element {
 
       {active && view ? (
         <Conversation view={view} call={call} agentName={agentName} launchers={launchers} canChat={canChat} focusId={focus} onFocus={setFocus} panelOpen={panel} onTogglePanel={togglePanel} />
+      ) : page === 'bots' ? (
+        <BotsView
+          launchers={launchers}
+          canChat={canChat}
+          channels={channels}
+          agentName={agentName}
+          onOpen={(id) => setActive(id)}
+          onSaved={() => setBotsVersion((v) => v + 1)}
+          onStart={(agent) => {
+            remember(`wb-cowork-agent:${workspaceRoot}`, agent)
+            setPage('home')
+          }}
+        />
       ) : (
         <Home launchers={launchers} canChat={canChat} onStart={start} busy={busy} />
       )}
