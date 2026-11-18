@@ -8,6 +8,7 @@ import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelView, NodeRuntime } from '../../../../shared/canvas'
 import { toolSummary, type AguiUpdate, type TranscriptEntry } from '../../../../shared/agui'
+import Guests from './Guests'
 import TerminalPane from './TerminalPane'
 import { handles, MembersBar, NeedsYou, TaskCards } from './Team'
 import { markOf, type CanvasCall } from './types'
@@ -92,7 +93,7 @@ function ApprovalCard({ e, onAnswer, disabled }: { e: ApprovalEntry; onAnswer: (
   if (e.status !== 'pending') {
     return (
       <div className={`cw-settled st-${e.status}`}>
-        {t(`cw.approval_${e.status}`)} · <span className="cw-mono">{e.summary}</span>
+        {t(`cw.approval_${e.status}`)}{e.by ? ` (${t('cw.byGuest', { name: e.by })})` : ''} · <span className="cw-mono">{e.summary}</span>
       </div>
     )
   }
@@ -116,7 +117,7 @@ function Entry({ e, who, from, answer, busy }: { e: TranscriptEntry; who?: strin
       case 'user':
         return (
           <div className="cw-user">
-            {e.from !== 'user' && <div className="cw-from">{t('cw.fromAgent', { id: from(e.from) })}</div>}
+            {e.from !== 'user' && <div className="cw-from">{e.from.startsWith('guest:') ? from(e.from) : t('cw.fromAgent', { id: from(e.from) })}</div>}
             {e.text}
           </div>
         )
@@ -199,7 +200,8 @@ export default function Conversation({
   const anyChat = nodes.some((n) => n.mode === 'chat')
   const all = useTranscripts(call, channelId, anyChat)
   const tags = useMemo(() => handles(nodes, agentName), [nodes, agentName])
-  const label = (id: string): string => (id === 'app' ? 'Agent Workbench' : `@${tags.get(id) ?? id}`)
+  const label = (id: string): string => (id === 'app' ? 'Agent Workbench' : id.startsWith('guest:') ? t('cw.guestName', { name: id.slice(6) }) : `@${tags.get(id) ?? id}`)
+  const [inviting, setInviting] = useState(false)
   const entries: Shown[] = useMemo(
     () => (!node ? [] : atLead && nodes.length > 1 ? groupThread(all, leadId) : (all[node.id] ?? []).map((e) => ({ node: node.id, e }))),
     [all, node, atLead, nodes.length, leadId]
@@ -274,8 +276,10 @@ export default function Conversation({
         ) : (
           status !== 'creating' && status !== 'closing' && <button className="cw-icon" disabled={busy || stopped} title={t('canvas.restart')} onClick={() => void act(() => call('node.restart', ids))}>↻</button>
         )}
+        <button className="cw-btn" aria-expanded={inviting} onClick={() => setInviting(!inviting)}>{t('cw.invite')}</button>
         <button className={`cw-icon ${panelOpen ? 'on' : ''}`} title={t('cw.workspace')} aria-pressed={panelOpen} onClick={onTogglePanel}>▭</button>
       </header>
+      {inviting && <div className="cw-invite-wrap"><Guests call={call} channelId={channelId} onClose={() => setInviting(false)} /></div>}
       <MembersBar view={view} call={call} agentName={agentName} launchers={launchers} canChat={canChat} focus={node.id} onFocus={setFocusId} />
 
       {taken && rt?.ptyId ? (

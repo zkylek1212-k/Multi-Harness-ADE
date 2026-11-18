@@ -543,6 +543,50 @@ try {
   phone.send({ t: 'canvas', reqId: 5, windowId: 2, op: 'stop.killAll', req: null })
   assert.equal((await phone.take((m) => m.t === 'canvas' && m.reqId === 5, 'stage 2 is desktop-only')).result.code, 'not-allowed')
 
+  // Colleagues in one channel (cowork-agui-implement.md §13): one-time invite, their channel and their ops only,
+  // nothing meant for paired devices, revoking disconnects at once
+  const chA = (await ipc('canvas:channel.create', { name: 'shared' })).data.channel.id
+  const chB = (await ipc('canvas:channel.create', { name: 'private' })).data.channel.id
+  const inv = await ipc('canvas:guest.invite', { channelId: chA })
+  assert.equal(inv.ok, true, JSON.stringify(inv))
+  const code = /#join=([A-Za-z0-9_-]+)$/.exec(inv.data.url)![1]
+  assert.ok(!fs.readFileSync(path.join(data, 'remote', 'invites.json'), 'utf8').includes(code), 'only the code hash is stored')
+  const guest = await Phone.connect()
+  guest.send({ t: 'guestJoin', code, name: 'Ann' })
+  const gtoken = (await guest.take((m) => m.t === 'guestJoined', 'guest token')).token
+  assert.deepEqual((await guest.take((m) => m.t === 'authed', 'guest authed')).guest.channelId, chA)
+  const again = await Phone.connect()
+  again.send({ t: 'guestJoin', code, name: 'Bob' })
+  assert.match((await again.take((m) => m.t === 'error', 'used invite')).message, /invalid or expired/)
+  const asDevice = await Phone.connect()
+  asDevice.send({ t: 'auth', token: gtoken })
+  assert.equal(await asDevice.closedWith(), 4001, 'a guest token is not a device token')
+  const gcall = async (reqId: number, op: string, req: unknown): Promise<any> => {
+    guest.send({ t: 'canvas', reqId, windowId: 0, op, req })
+    return (await guest.take((m) => m.t === 'canvas' && m.reqId === reqId, op, 60000)).result
+  }
+  assert.equal((await gcall(101, 'channel.get', { channelId: chA })).ok, true, 'their channel')
+  assert.equal((await gcall(102, 'channel.get', { channelId: chB })).code, 'not-allowed', 'never another channel')
+  assert.equal((await gcall(103, 'channels.list', null)).code, 'not-allowed', 'not even the list of channels')
+  assert.equal((await gcall(104, 'node.create', { channelId: chA, agent: 'claude' })).code, 'not-allowed')
+  assert.equal((await gcall(105, 'guest.invite', { channelId: chA })).code, 'not-allowed', 'guests cannot invite')
+  await gcall(106, 'chat.send', { channelId: chA, text: 'guest-secret-456' })
+  guest.send({ t: 'spawn', windowId: 2 })
+  assert.match((await guest.take((m) => m.t === 'error', 'no terminals')).message, /not allowed/)
+  assert.ok(!guest.inbox.some((m) => m.t === 'state'), 'no device state, windows or terminals')
+  assert.match(auditLog(), /"event":"guest\.chat\.send"/)
+  assert.match(auditLog(), /"event":"guest\.channel\.get".*"guestId"/, 'a refused cross-channel read is audited')
+  assert.doesNotMatch(auditLog(), /guest-secret-456/)
+  assert.equal((await ipc('canvas:guest.invite', { channelId: 'nope' })).code, 'not-found')
+  const glist = (await ipc('canvas:guest.list', { channelId: chA })).data
+  assert.deepEqual(glist.map((g: any) => [g.name, g.online]), [['Ann', true]])
+  assert.equal((await ipc('canvas:guest.list', { channelId: chB })).data.length, 0)
+  assert.equal((await ipc('canvas:guest.revoke', { channelId: chA, guestId: glist[0].id })).data, true)
+  assert.equal(await guest.closedWith(), 4001, 'revoking disconnects at once')
+  const revoked = await Phone.connect()
+  revoked.send({ t: 'guestAuth', token: gtoken })
+  assert.equal(await revoked.closedWith(), 4001, 'and the token is gone')
+
   // Opening a folder only from the desktop's own recent list
   phone.send({ t: 'openWorkspace', path: outside })
   assert.match((await phone.take((m) => m.t === 'error', 'unknown folder')).message, /not available/)

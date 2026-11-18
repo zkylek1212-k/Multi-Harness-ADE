@@ -186,6 +186,24 @@ const zh = {
   cv_err_not_allowed: '手機不能做這個操作，請在桌面處理。',
   cv_err_offline: '連線中斷，沒有送出。',
   cv_err_timeout: '桌面沒有回應，沒有重送；請確認狀態後再試。',
+  // 同事（邀請進 channel）
+  gu_joinTitle: '加入一段對話',
+  gu_joinDesc: '有人邀請你進他電腦上的一個 Cowork channel。你可以看對話與改動、送訊息、核准或拒絕、停止這一輪。',
+  gu_name: '你的名字（別人會看到）',
+  gu_join: '加入',
+  gu_joining: '加入中…',
+  gu_risk: '你送的訊息就是給 Agent 的指令；你按「允許」，指令就用對方的帳號在對方的電腦上執行。每則訊息與核准都會記下是你。',
+  gu_noInvite: '這個網址沒有邀請碼。請向邀請你的人要一個新的連結。',
+  gu_invalid: '邀請連結已用過、過期或無效。請向邀請你的人要一個新的。',
+  gu_unreachable: '連不到那台電腦。確認你在同一個內網。',
+  gu_endedTitle: '已無法進入',
+  gu_ended: '邀請你的人撤銷了你的存取，或它已失效。',
+  gu_as: '你是 {name}',
+  gu_stop: '停止這一輪',
+  gu_changes: '看改動',
+  gu_refresh: '重新整理',
+  gu_hide: '收起',
+  gu_noChanges: '還沒有改動。',
 }
 
 /** Cowork 開會用的語言：跟手機介面一致 */
@@ -370,6 +388,23 @@ const en: typeof zh = {
   cv_err_not_allowed: 'This cannot be done from the phone. Use the desktop.',
   cv_err_offline: 'Disconnected; nothing was sent.',
   cv_err_timeout: 'The desktop did not answer and nothing was resent. Check the state and try again.',
+  gu_joinTitle: 'Join a conversation',
+  gu_joinDesc: 'You were invited into a Cowork channel on someone else’s computer. You can read the conversation and its changes, send messages, approve or deny, and stop the current turn.',
+  gu_name: 'Your name (others see it)',
+  gu_join: 'Join',
+  gu_joining: 'Joining…',
+  gu_risk: 'What you send is an instruction to the agent; when you press Allow, the command runs on their computer under their account. Every message and approval is recorded as yours.',
+  gu_noInvite: 'This address has no invite code. Ask the person who invited you for a new link.',
+  gu_invalid: 'The invite link was already used, expired or is not valid. Ask for a new one.',
+  gu_unreachable: 'Cannot reach that computer. Make sure you are on the same office network.',
+  gu_endedTitle: 'No longer available',
+  gu_ended: 'The person who invited you removed your access, or it expired.',
+  gu_as: 'You are {name}',
+  gu_stop: 'Stop this turn',
+  gu_changes: 'Show changes',
+  gu_refresh: 'Refresh',
+  gu_hide: 'Hide',
+  gu_noChanges: 'No changes yet.',
 }
 
 // 語言：跟隨系統（預設）、繁中或英文，存在這支手機的 localStorage

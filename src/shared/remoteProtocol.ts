@@ -63,6 +63,9 @@ export type ClientMessage =
   | { t: 'auth'; token: string }
   /** 配對（跨 origin 的 fetch 會被 CORS 擋，所以配對也走 WebSocket） */
   | { t: 'pairRequest'; code: string; name: string }
+  /** A colleague's invite link (cowork-agui-implement.md §13): a one-time code for one channel */
+  | { t: 'guestJoin'; code: string; name: string }
+  | { t: 'guestAuth'; token: string }
   | { t: 'attach'; id: string }
   | { t: 'detach'; id: string }
   | { t: 'input'; id: string; data: string }
@@ -88,6 +91,9 @@ export type ClientMessage =
 export type ServerMessage =
   | { t: 'paired'; token: string; deviceId: string }
   | { t: 'authed'; deviceId: string; deviceName: string; hostName: string }
+  /** A colleague's connection: one channel, no devices, terminals or files */
+  | { t: 'authed'; guest: { id: string; name: string; channelId: string }; hostName: string }
+  | { t: 'guestJoined'; token: string }
   | {
       t: 'state'
       sessions: RemoteSession[]

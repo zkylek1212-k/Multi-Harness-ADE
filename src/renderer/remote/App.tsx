@@ -12,6 +12,7 @@ import type {
 } from '../../shared/remoteProtocol'
 import { sessionStatus } from '../../shared/remoteProtocol'
 import { pairOverWs, RemoteConnection, type ConnState } from './conn'
+import GuestApp, { isGuestPage } from './Guest'
 import { disablePush, enablePush, isStandalone, pushState, pushSupported, registerServiceWorker } from './api'
 import TerminalView from './TerminalView'
 import { FilePane, StatusPane } from './WorkspacePanes'
@@ -94,10 +95,12 @@ export default function App(): JSX.Element {
   // 切換語言時整棵樹重畫（不重新掛載，連線與目前畫面都保留）
   const [, setLangTick] = useState(0)
   useEffect(() => onLangChange(() => setLangTick((n) => n + 1)), [])
+  // A colleague's invite link opens their channel, never the paired-phone app
+  const [guest] = useState(isGuestPage)
   return (
     <>
       <Backdrop />
-      <Screens />
+      {guest ? <GuestApp /> : <Screens />}
     </>
   )
 }
@@ -407,6 +410,7 @@ function Main({
     const off = conn.onMessage((m: ServerMessage) => {
       switch (m.t) {
         case 'authed':
+          if (!('deviceId' in m)) break
           setHost(m.hostName)
           // 連上也驗過了，把名字換成電腦自己報的主機名（剛加進來時只有 IP）
           onHostsChange(addHost(base, m.hostName) || loadHosts())

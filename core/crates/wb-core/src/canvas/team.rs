@@ -181,14 +181,14 @@ fn route_ok(t: &Team, from: &str, to: &str) -> bool {
 fn needs_approval(t: &Team, from: &str) -> bool {
     match t.relay.as_str() {
         "auto" => false,
-        "lead-auto" => from != t.lead_id && from != "app" && from != "user",
-        _ => from != "app" && from != "user",
+        "lead-auto" => from != t.lead_id && from != "app" && !person(from),
+        _ => from != "app" && !person(from),
     }
 }
 
 /// Caps only apply where messages flow without the user (lead-auto, auto); approve mode has the user on every one
 fn limit_hit(t: &Team, msgs: &[Msg], from: &str, to: &str, now: f64) -> Option<String> {
-    if t.relay == "approve" || from == "app" || from == "user" {
+    if t.relay == "approve" || from == "app" || person(from) {
         return None;
     }
     if t.message_count >= t.limits.max_messages {
@@ -201,20 +201,33 @@ fn limit_hit(t: &Team, msgs: &[Msg], from: &str, to: &str, now: f64) -> Option<S
     }
     // Ping-pong: the last messages of the team all between the same two nodes, with no report in between
     let pair = |m: &Msg| (m.from == from && m.to == to) || (m.from == to && m.to == from);
-    let tail: Vec<&Msg> = msgs.iter().rev().filter(|m| m.team_id == t.id && m.kind != "system" && m.to != "user" && m.from != "user").take(PING_PONG - 1).collect();
+    let tail: Vec<&Msg> = msgs.iter().rev().filter(|m| m.team_id == t.id && m.kind != "system" && m.to != "user" && !person(&m.from)).take(PING_PONG - 1).collect();
     if tail.len() == PING_PONG - 1 && tail.iter().all(|m| pair(m) && m.kind != "report") {
         return Some(format!("{from} and {to} keep messaging each other without a report"));
     }
     None
 }
 
+/// The user, or a colleague the user invited into the channel (`guest:<name>`, §13): people, never held or capped
+fn person(x: &str) -> bool {
+    x == "user" || x.starts_with("guest:")
+}
+
+/// Who said it, from a request: the remote server sets `_guest` for a colleague; everyone else is the user
+fn speaker(req: &Value) -> String {
+    match req.get("_guest").and_then(Value::as_str) {
+        Some(g) if !g.is_empty() => format!("guest:{}", js_prefix(g, 40)),
+        _ => "user".into(),
+    }
+}
+
 /// Free talk on: bot-to-bot messages since the user's last message are capped
 fn free_talk_hit(t: &Team, msgs: &[Msg], from: &str, to: &str) -> bool {
-    let agent = |x: &str| x != "app" && x != "user";
+    let agent = |x: &str| x != "app" && !person(x);
     if !t.free_talk || !agent(from) || !agent(to) {
         return false;
     }
-    let since = msgs.iter().rposition(|m| m.team_id == t.id && m.from == "user").map(|i| i + 1).unwrap_or(0);
+    let since = msgs.iter().rposition(|m| m.team_id == t.id && person(&m.from)).map(|i| i + 1).unwrap_or(0);
     msgs[since..].iter().filter(|m| m.team_id == t.id && agent(&m.from) && agent(&m.to)).count() >= FREE_TALK_REPLIES
 }
 
@@ -429,7 +442,7 @@ fn post(st: &mut RepoState, repo: &Repo, ch: &str, team: &str, from: &str, to: &
     let text = js_prefix(&sanitize_text(text, true), MAX_TEXT);
     let c = st.channels.get_mut(ch).ok_or_else(|| err("not-found", "channel"))?;
     let t = c.teams.iter().find(|t| t.id == team).ok_or_else(|| err("not-found", "team"))?.clone();
-    if t.status != "running" && from != "app" && from != "user" {
+    if t.status != "running" && from != "app" && !person(from) {
         return Err(err("paused", "The team is not running; nothing was sent"));
     }
     let msgs = st.msgs.entry(ch.to_string()).or_default();
@@ -445,7 +458,7 @@ fn post(st: &mut RepoState, repo: &Repo, ch: &str, team: &str, from: &str, to: &
     let id = short_id();
     msgs.push(Msg { id: id.clone(), team_id: team.into(), from: from.into(), to: to.into(), kind: kind.into(), text, at: now, state: if hold { "pending-approval" } else { "queued" }.into(), group: None });
     if let Some(t) = c.teams.iter_mut().find(|t| t.id == team) {
-        if from != "app" && from != "user" {
+        if from != "app" && !person(from) {
             t.message_count += 1;
         }
     }
@@ -506,7 +519,7 @@ pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
                 }
                 let m = &mut msgs[idx[0]];
                 m.state = "read".into();
-                let mut sent = if m.from == "user" { user_text(c, m) } else { envelope(c, m) };
+                let mut sent = if person(&m.from) { user_text(c, m) } else { envelope(c, m) };
                 if let (Some(_), Some(generation)) = (&rt.hook_token, &rt.generation) {
                     if st.briefed.insert(generation.clone()) {
                         sent = format!("{}\n\n{sent}", brief(c, team, &node));
@@ -519,7 +532,7 @@ pub(super) fn deliver(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str) {
                 continue;
             }
             let (Some(pty), Some(generation)) = (rt.pty_id.clone(), rt.generation.clone()) else { continue };
-            let mine: Vec<usize> = idx.iter().copied().filter(|i| msgs[*i].from == "user").collect();
+            let mine: Vec<usize> = idx.iter().copied().filter(|i| person(&msgs[*i].from)).collect();
             if !mine.is_empty() {
                 // The user's words go in first and on their own; other mail waits for the next idle moment
                 let mut text = mine.iter().map(|i| user_text(c, &msgs[*i])).collect::<Vec<_>>().join("\n\n");
@@ -606,6 +619,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                     return Err(err("stopped", "Stopped: clear the stop first"));
                 }
                 let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
+                let who = speaker(req);
                 let bots: Vec<String> = c.nodes.iter().filter(|n| BUILTIN.contains(&n.agent.as_str()) || n.agent == crate::custom_agent::CUSTOM_AGENT_ID).map(|n| n.id.clone()).collect();
                 let t = group_mut(c)?;
                 let free = s(req, "to").is_empty() && t.free_talk && bots.len() > 1;
@@ -623,7 +637,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                     // Every bot gets it and answers PASS when it is not for its role (§6.8)
                     let group = short_id();
                     for b in &bots {
-                        post(st, repo, &ch, GROUP, "user", b, "free", text)?;
+                        post(st, repo, &ch, GROUP, &who, b, "free", text)?;
                         if let Some(m) = st.msgs.get_mut(&ch).and_then(|m| m.last_mut()) {
                             m.group = Some(group.clone());
                         }
@@ -634,7 +648,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                 } else {
                     let title = js_prefix(sanitize_text(text, false).trim(), 120);
                     c.tasks.insert(to.clone(), NodeTask { title, status: "working".into(), summary: None, updated_at: now_ms(), source: "user".into(), memory: None });
-                    post(st, repo, &ch, GROUP, "user", &to, "message", text)?;
+                    post(st, repo, &ch, GROUP, &who, &to, "message", text)?;
                 }
             }
             emit(core, repo, &ch);
@@ -718,7 +732,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                     push_event(c, ev);
                     let _ = repo.save(c);
                 }
-                if !approve && from != "app" && from != "user" {
+                if !approve && from != "app" && !person(&from) {
                     let to_name = st.channels.get(&ch).map(|c| display(c, &to)).unwrap_or(to.clone());
                     let _ = post(st, repo, &ch, &team, "app", &from, "system", &format!("The user rejected your message {id} to {to_name}. It was not delivered."));
                 }
@@ -762,7 +776,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                 let st = &mut *st;
                 let k = st.asks.iter().find(|(k, a)| a.id == s(req, "askId") && k.starts_with(&format!("{ch}/"))).map(|(k, _)| k.clone());
                 let a = k.and_then(|k| st.asks.remove(&k)).ok_or_else(|| err("stale-request", "This question was already answered"))?;
-                post(st, repo, &ch, GROUP, "user", &a.node, "message", &format!("Answer to your question \"{}\":\n{text}", a.question))?;
+                post(st, repo, &ch, GROUP, &speaker(req), &a.node, "message", &format!("Answer to your question \"{}\":\n{text}", a.question))?;
             }
             emit(core, repo, &ch);
             deliver(core, repo, &ch);
@@ -1253,7 +1267,7 @@ mod tests {
         assert!(!needs_approval(&team("lead-auto"), "L") && needs_approval(&team("lead-auto"), "A"));
         assert!(!needs_approval(&team("auto"), "A"));
         for relay in RELAYS {
-            assert!(!needs_approval(&team(relay), "app") && !needs_approval(&team(relay), "user"), "{relay}");
+            assert!(!needs_approval(&team(relay), "app") && !needs_approval(&team(relay), "user") && !needs_approval(&team(relay), "guest:Ann"), "{relay}");
         }
     }
 

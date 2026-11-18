@@ -198,6 +198,12 @@
 .cw-by { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--cw-line); }
 .cw-pick { border: 0; cursor: pointer; }
 
+/* inviting colleagues (§13) */
+.cw-invite-wrap { padding: 10px 18px; border-bottom: 1px solid var(--cw-line); }
+.cw-guests { max-width: 780px; margin: 0 auto; }
+.cw-risk { margin: 0; padding-left: 18px; color: var(--cw-amber); font-size: 12.5px; line-height: 1.5; }
+.cw-col { display: flex; flex-direction: column; gap: 6px; }
+
 /* bots page */
 .cw-nav { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; border-radius: 8px; padding: 8px 10px; min-height: 34px; cursor: pointer; text-align: left; margin-bottom: 8px; }
 .cw-nav:hover, .cw-nav.on { background: var(--cw-hover); }

@@ -597,6 +597,22 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
     }
     let repo = repo_for(core, ws)?;
     repo.load(&mut repo.st.lock().unwrap());
+    // Colleagues in a channel (§13): only the user, at the desktop, invites and revokes
+    if let Some(what) = op.strip_prefix("guest.") {
+        if origin != Origin::Desktop {
+            return Err(err("not-allowed", "Desktop only"));
+        }
+        let ch = s(req, "channelId");
+        if what != "revoke" && !repo.st.lock().unwrap().channels.contains_key(ch) {
+            return Err(err("not-found", "channel"));
+        }
+        return match what {
+            "invite" => crate::remote::guest_invite(core, ch, &p(&repo.root)).map_err(|e| err("invalid", e)),
+            "list" => Ok(crate::remote::guest_list(core, ch)),
+            "revoke" => Ok(json!(crate::remote::guest_revoke(core, s(req, "guestId")))),
+            _ => Err(err("invalid", "Unknown guest operation")),
+        };
+    }
     let (ch, nd) = (s(req, "channelId").to_string(), s(req, "nodeId").to_string());
     match op {
         "channels.list" => {
@@ -1140,7 +1156,25 @@ pub fn phone_call(core: &Arc<Core>, ws: &str, op: &str, req: &Value) -> Value {
     if !crate::remote::server::PHONE_CANVAS_OPS.contains(&op) {
         return json!({ "ok": false, "code": "not-allowed" });
     }
-    let mut out = wrap(dispatch(core, ws, op, req, Origin::Phone));
+    // Only the server sets who a colleague is
+    let mut req = req.clone();
+    if let Some(o) = req.as_object_mut() {
+        o.remove("_guest");
+    }
+    phone_shape(op, wrap(dispatch(core, ws, op, &req, Origin::Phone)))
+}
+
+/// A colleague invited into one channel (§13.3); the remote server already checked the op and the channel and set
+/// `_guest`. They see what the phone sees, plus the worktree's diff (Workspace "Changes").
+pub fn guest_call(core: &Arc<Core>, ws: &str, op: &str, req: &Value) -> Value {
+    if !crate::remote::server::GUEST_OPS.contains(&op) {
+        return json!({ "ok": false, "code": "not-allowed" });
+    }
+    let out = wrap(dispatch(core, ws, op, req, Origin::Phone));
+    if op == "node.changes" { out } else { for_phone(phone_shape(op, out)) }
+}
+
+fn phone_shape(op: &str, mut out: Value) -> Value {
     // A conversation on the phone is its recent part; the desktop keeps the rest
     if op == "chat.transcript" {
         let cut = |t: &mut Value| {

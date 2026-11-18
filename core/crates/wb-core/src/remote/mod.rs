@@ -56,6 +56,34 @@ pub fn on_canvas_update(core: &Core, update: &Value) {
     }
 }
 
+/// An invite link for one channel (§13.2). Needs Remote on: colleagues reach this computer through its server.
+pub fn guest_invite(core: &Core, channel: &str, repo: &str) -> Result<Value, String> {
+    let app = &core.features().remote;
+    let s = status(core);
+    if s["running"] != json!(true) {
+        return Err("Turn on Remote control in Settings first: colleagues connect through it, on this network only".into());
+    }
+    let base = s["appUrl"].as_str().ok_or("This computer has no network address colleagues can reach")?.to_string();
+    let (code, expires) = app.store.add_invite(channel, repo)?;
+    let ca = s["setupUrl"].as_str().map(|u| format!("{u}ca.crt"));
+    Ok(json!({ "url": format!("{base}#join={code}"), "expiresAt": expires, "caUrl": ca }))
+}
+
+pub fn guest_list(core: &Core, channel: &str) -> Value {
+    let app = &core.features().remote;
+    json!(app
+        .store
+        .load_guests()
+        .iter()
+        .filter(|g| crate::util::sv(g, "channel") == channel)
+        .map(|g| json!({ "id": g["id"], "name": g["name"], "createdAt": g["createdAt"], "lastSeenAt": g["lastSeenAt"], "online": app.bridge.guest_online(crate::util::sv(g, "id")) }))
+        .collect::<Vec<_>>())
+}
+
+pub fn guest_revoke(core: &Core, id: &str) -> bool {
+    core.features().remote.bridge.revoke_guest(id)
+}
+
 /// `what`: a short kind ("approval: shell", "question"), never content
 pub fn on_chat_waiting(core: &Core, id: &str, who: &str, what: &str) {
     if let Some(f) = core.features.get() {

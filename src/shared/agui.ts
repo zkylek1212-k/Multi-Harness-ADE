@@ -18,7 +18,8 @@ export type TranscriptEntry =
   | { kind: 'user'; id: string; text: string; from: string; at: number }
   | { kind: 'text'; id: string; text: string; at: number }
   | { kind: 'tool'; id: string; name: string; args: string; output: string; status: 'running' | 'done' | 'stopped'; at: number }
-  | { kind: 'approval'; id: string; tool: string; summary: string; status: 'pending' | 'allowed' | 'denied' | 'expired'; sessionScope: boolean; at: number }
+  /** `by`: a colleague answered it (§13.4) */
+  | { kind: 'approval'; id: string; tool: string; summary: string; status: 'pending' | 'allowed' | 'denied' | 'expired'; sessionScope: boolean; at: number; by?: string }
   | { kind: 'runError'; id: string; message: string; interrupted: boolean; at: number }
   /** From the app: 'took-control' | 'handed-back' */
   | { kind: 'note'; id: string; text: string; at: number }

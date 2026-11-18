@@ -22,7 +22,17 @@ pub enum Entry {
     #[serde(rename_all = "camelCase")]
     Tool { id: String, name: String, args: String, output: String, status: String, at: f64 },
     #[serde(rename_all = "camelCase")]
-    Approval { id: String, tool: String, summary: String, status: String, session_scope: bool, at: f64 },
+    Approval {
+        id: String,
+        tool: String,
+        summary: String,
+        status: String,
+        session_scope: bool,
+        at: f64,
+        /// Who answered when it was not the user: a colleague's name (§13.4)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
     /// A line from the app itself (took control, handed back)
     #[serde(rename_all = "camelCase")]
     Note { id: String, text: String, at: f64 },
@@ -71,14 +81,19 @@ impl Transcript {
     }
 
     pub fn approval(&mut self, a: &Approval, at: f64) {
-        self.push(Entry::Approval { id: a.id.clone(), tool: a.tool.clone(), summary: a.summary.clone(), status: "pending".into(), session_scope: a.session_scope, at });
+        self.push(Entry::Approval { id: a.id.clone(), tool: a.tool.clone(), summary: a.summary.clone(), status: "pending".into(), session_scope: a.session_scope, at, by: None });
     }
 
     /// pending -> allowed | denied | expired; false when there is no such pending approval
     pub fn settle(&mut self, id: &str, status: &str) -> bool {
+        self.settle_by(id, status, None)
+    }
+
+    pub fn settle_by(&mut self, id: &str, status: &str, who: Option<&str>) -> bool {
         match self.find(|e| matches!(e, Entry::Approval { id: i, .. } if i == id)) {
-            Some(Entry::Approval { status: s, .. }) if s == "pending" => {
+            Some(Entry::Approval { status: s, by, .. }) if s == "pending" => {
                 *s = status.into();
+                *by = who.map(str::to_string);
                 true
             }
             _ => false,

@@ -352,6 +352,7 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                 return Err(err("invalid", "Empty or too long"));
             }
             let text = sanitize_text(text, true);
+            // Straight to one node; the group's own path (chat.send) is what the UI uses
             prompt(core, repo, ch, nd, &short_id(), &text, &text, "user")?;
             Ok(Value::Null)
         }
@@ -368,7 +369,8 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                 let mut st = repo.st.lock().unwrap();
                 let chat = running_chat(&st, ch, nd)?;
                 // One answer per approval, from whichever window or phone gets there first
-                if !repo.transcripts(&mut st, ch).entry(nd.to_string()).or_default().settle(id, if allow { "allowed" } else { "denied" }) {
+                let by = req.get("_guest").and_then(Value::as_str);
+                if !repo.transcripts(&mut st, ch).entry(nd.to_string()).or_default().settle_by(id, if allow { "allowed" } else { "denied" }, by) {
                     return Err(err("stale-request", "Already answered"));
                 }
                 repo.save_transcripts(&st, ch);

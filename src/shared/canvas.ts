@@ -55,6 +55,23 @@ export interface Routine {
   lastRun?: { channel: string; at: number; status: 'running' | 'ok' | 'failed' | 'stopped'; summary?: string; seen: boolean }
 }
 
+/** A colleague invited into one channel (§13) */
+export interface GuestInfo {
+  id: string
+  name: string
+  createdAt: number
+  lastSeenAt: number
+  online: boolean
+}
+
+export interface GuestInvite {
+  /** One use, expires after 7 days */
+  url: string
+  expiresAt: number
+  /** Where a colleague's browser gets this computer's certificate, so it stops warning */
+  caUrl?: string
+}
+
 /** An ask_person question waiting for the user (§6.4) */
 export interface PersonAsk {
   id: string
@@ -353,6 +370,11 @@ export interface CanvasOps {
   'chat.answer': { req: { channelId: string; nodeId: string; approvalId: string; allow: boolean; forSession?: boolean }; res: void }
   /** Without nodeId: every chat node's, keyed by node id */
   'chat.transcript': { req: { channelId: string; nodeId?: string }; res: Transcript }
+  /** Desktop only; needs Remote control on: colleagues connect through it */
+  'guest.invite': { req: { channelId: string }; res: GuestInvite }
+  'guest.list': { req: { channelId: string }; res: GuestInfo[] }
+  /** Ends their access at once and closes their connections */
+  'guest.revoke': { req: { channelId: string; guestId: string }; res: boolean }
   'routine.list': { req: void; res: Routine[] }
   /** Creates (id '') or updates; refused over 20 enabled or under 15 minutes */
   'routine.save': { req: { routine: Routine }; res: Routine }
