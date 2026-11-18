@@ -16,8 +16,10 @@ use crate::util::{js_prefix, now_ms, p, read_json_with_fallback, real_path, uuid
 use crate::worktree::{self as wt, NodeWorktree};
 
 mod chat;
+mod routine;
 mod team;
 pub use chat::AGUI_EVENT;
+pub use routine::ROUTINES_EVENT;
 pub use team::{mcp_call, mcp_request, tool_names};
 
 pub const UPDATE_EVENT: &str = "canvas:update";
@@ -83,6 +85,9 @@ struct Node {
     /// One line on what this bot does in the group ("backend and API"); claiming and PASS go by it (§6.8)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    /// A report-only routine's Bot: the CLI's own read-only mode (§11.1)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    read_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -102,6 +107,9 @@ struct Channel {
     /// Tasks posted for any member to claim (§6.8)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     board: Vec<team::BoardTask>,
+    /// This conversation is a run of that routine (§11)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    routine: Option<String>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -451,8 +459,9 @@ fn on_exit(core: &Core, pty: &str, code: i32) {
     emit(core, &repo, &channel);
 }
 
-/// Wire the PTY events in; called once from start_features
+/// Wire the PTY events in and start the routine clock; called once from start_features
 pub fn start(core: &Arc<Core>) {
+    routine::start(core);
     let weak = Arc::downgrade(core);
     core.pty.on_event(Arc::new(move |ev| {
         let Some(core) = weak.upgrade() else { return };
@@ -582,6 +591,10 @@ fn sanitize_text(text: &str, keep_newlines: bool) -> String {
 }
 
 fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -> R<Value> {
+    // Routines belong to the app, not to one repository's conversations
+    if op.starts_with("routine.") {
+        return if origin == Origin::Desktop { routine::dispatch_op(core, ws, op, req) } else { Err(err("not-allowed", "Desktop only")) };
+    }
     let repo = repo_for(core, ws)?;
     repo.load(&mut repo.st.lock().unwrap());
     let (ch, nd) = (s(req, "channelId").to_string(), s(req, "nodeId").to_string());
@@ -616,7 +629,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 if st.channels.len() >= MAX_CHANNELS {
                     return Err(err("invalid", "Too many channels"));
                 }
-                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], events: vec![], teams: vec![], tasks: Default::default(), board: vec![] };
+                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], events: vec![], teams: vec![], tasks: Default::default(), board: vec![], routine: None };
                 repo.save(&c)?;
                 st.channels.insert(id.clone(), c);
             }
@@ -681,7 +694,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                     return Err(err("invalid", "Too many nodes"));
                 }
                 // The record comes first, so a failure below still leaves something to inspect and retry
-                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None, role });
+                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None, role, read_only: req["readOnly"] == true });
                 team::sync_group(c);
                 repo.save(c)?;
                 st.rt.insert(key(&ch, &id), NodeRt { status: "creating", ..Default::default() });
@@ -1293,8 +1306,8 @@ mod tests {
 
     #[test]
     fn channel_validation_rejects_bad_ids() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None, role: None };
-        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default(), board: vec![] };
+        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None, role: None, read_only: false };
+        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default(), board: vec![], routine: None };
         assert!(channel_ok(&c));
         c.nodes.push(n("../x"));
         assert!(!channel_ok(&c), "path in an id");

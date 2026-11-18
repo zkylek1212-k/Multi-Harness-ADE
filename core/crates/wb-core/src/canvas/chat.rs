@@ -37,7 +37,7 @@ impl Repo {
         self.dir().join(format!("{channel}.chat.json"))
     }
 
-    fn transcripts<'a>(&self, st: &'a mut RepoState, channel: &str) -> &'a mut BTreeMap<String, Transcript> {
+    pub(super) fn transcripts<'a>(&self, st: &'a mut RepoState, channel: &str) -> &'a mut BTreeMap<String, Transcript> {
         st.transcripts.entry(channel.to_string()).or_insert_with(|| read_json_with_fallback(&self.chat_file(channel), &|v| serde_json::from_value::<BTreeMap<String, Transcript>>(v.clone()).is_ok()).and_then(|(v, _)| serde_json::from_value(v).ok()).unwrap_or_default())
     }
 
@@ -66,6 +66,19 @@ fn on_out(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &s
     let now = now_ms();
     let mut refresh = false;
     let mut entry: Option<Entry> = None;
+    // A turn ended: (ok, stopped by the user), for routines
+    let mut ended: Option<(bool, bool)> = None;
+    // The app's own team tools only talk to this app: never a card. Claude's plan mode (report-only routines) asks
+    // about every MCP call, even allowed ones.
+    if let Out::Approval(a) = &out {
+        if a.tool.starts_with("mcp__workbench__") {
+            let chat = repo.st.lock().unwrap().rt.get(&key(ch, nd)).filter(|r| r.generation.as_deref() == Some(generation)).and_then(|r| r.chat.clone());
+            if let Some(c) = chat {
+                c.answer(&a.id, true, false);
+            }
+            return;
+        }
+    }
     {
         let mut st = repo.st.lock().unwrap();
         let st = &mut *st;
@@ -85,6 +98,10 @@ fn on_out(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &s
                         Event::RunFinished { .. } | Event::RunError { .. } => {
                             rt.in_run = false;
                             refresh = true;
+                            ended = Some(match e {
+                                Event::RunError { code, .. } => (false, code.as_deref() == Some(crate::agui::INTERRUPTED)),
+                                _ => (true, false),
+                            });
                         }
                         _ => {}
                     }
@@ -122,6 +139,9 @@ fn on_out(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &s
         emit(core, repo, ch);
         // A node that just finished a turn may have team mail waiting
         team::deliver(core, repo, ch);
+    }
+    if let Some((ok, stopped)) = ended {
+        routine::on_turn_end(core, repo, ch, nd, ok, stopped);
     }
 }
 
@@ -188,7 +208,8 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
     let member = !team::leads(&repo.st.lock().unwrap(), ch, &node.id);
     let harness: Box<dyn Harness> = match proto {
         "claude-stream-json" => {
-            args.extend(claude::args(resume, CLAUDE_MODE, None));
+            // A report-only routine plans and reads; nothing it does writes (§11.1)
+            args.extend(claude::args(resume, if node.read_only { "plan" } else { CLAUDE_MODE }, None));
             args.extend(mount.args);
             // Only the lead writes the shared memory (§12.1); a shell write is only held back by the brief
             if member {
@@ -200,7 +221,7 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
             codex_protocol_ok(core, &command, &args, &env)?;
             args.extend(crate::agui::codex::args());
             args.extend(mount.args);
-            Box::new(Codex::new(&thread, &cwd, resume, CODEX_SANDBOX))
+            Box::new(Codex::new(&thread, &cwd, resume, if node.read_only { "read-only" } else { CODEX_SANDBOX }))
         }
         _ => {
             args.push("acp".into());

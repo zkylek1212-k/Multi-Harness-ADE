@@ -268,6 +268,12 @@ const api = {
       return () => ipcRenderer.removeListener('canvas:update', listener)
     },
     /** Chat nodes' live events (src/shared/agui.ts) */
+    /** A routine changed (saved, ran, finished); read routine.list again */
+    onRoutines: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('canvas:routines', listener)
+      return () => ipcRenderer.removeListener('canvas:routines', listener)
+    },
     onAgui: (cb: (u: AguiUpdate) => void): (() => void) => {
       const listener = (_e: unknown, u: AguiUpdate): void => cb(u)
       ipcRenderer.on('canvas:agui', listener)

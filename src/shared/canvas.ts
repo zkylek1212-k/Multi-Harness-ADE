@@ -33,6 +33,28 @@ export interface BoardTask {
   at: number
 }
 
+/** cowork-agui-implement.md §11: daily/weekly at a local HH:MM (day 0 = Monday), every N minutes (15 or more), or new commits on a branch */
+export type RoutineSchedule = { kind: 'daily'; time: string } | { kind: 'weekly'; day: number; time: string } | { kind: 'every'; minutes: number } | { kind: 'commit'; branch: string }
+
+export interface Routine {
+  /** '' when new; the backend assigns it */
+  id: string
+  name: string
+  /** The first message of each run's conversation */
+  prompt: string
+  agent: string
+  /** Set by the backend: the repository the routine was made in */
+  repo: string
+  /** report: read-only, the finding goes to Needs you; change: may change code in its own worktree */
+  scope: 'report' | 'change'
+  schedule: RoutineSchedule
+  enabled: boolean
+  nextAt: number
+  nextAtText?: string
+  failures: number
+  lastRun?: { channel: string; at: number; status: 'running' | 'ok' | 'failed' | 'stopped'; summary?: string; seen: boolean }
+}
+
 /** An ask_person question waiting for the user (§6.4) */
 export interface PersonAsk {
   id: string
@@ -331,6 +353,13 @@ export interface CanvasOps {
   'chat.answer': { req: { channelId: string; nodeId: string; approvalId: string; allow: boolean; forSession?: boolean }; res: void }
   /** Without nodeId: every chat node's, keyed by node id */
   'chat.transcript': { req: { channelId: string; nodeId?: string }; res: Transcript }
+  'routine.list': { req: void; res: Routine[] }
+  /** Creates (id '') or updates; refused over 20 enabled or under 15 minutes */
+  'routine.save': { req: { routine: Routine }; res: Routine }
+  'routine.delete': { req: { id: string }; res: void }
+  'routine.runNow': { req: { id: string }; res: void }
+  /** The finding was seen: off Needs you */
+  'routine.dismiss': { req: { id: string }; res: void }
   /** The answer goes back to the Bot as the user's next message */
   'ask.answer': { req: { channelId: string; askId: string; text: string }; res: void }
   /** Who leads, how agent messages are relayed, and the caps */

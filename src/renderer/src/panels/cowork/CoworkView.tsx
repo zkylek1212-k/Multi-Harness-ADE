@@ -9,6 +9,7 @@ import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelSummary, ChannelView, NodeMode, StopState } from '../../../../shared/canvas'
 import BotsView from './BotsView'
+import RoutinesView, { RoutineFindings, useRoutines } from './RoutinesView'
 import Conversation, { leadOf } from './Conversation'
 import Workspace from './Workspace'
 import { ago, BUILTIN_AGENTS, CHAT_AGENTS, markOf, recall, remember, type CanvasCall } from './types'
@@ -140,7 +141,7 @@ export default function CoworkView(): JSX.Element {
   /** The Bot shown in the conversation; null = its lead */
   const [focus, setFocus] = useState<string | null>(null)
   /** With no conversation open: the home page or the Bots page */
-  const [page, setPage] = useState<'home' | 'bots'>('home')
+  const [page, setPage] = useState<'home' | 'bots' | 'routines'>('home')
   /** Bumped when a Bot was saved, so its name and chat mode show up without a reload */
   const [botsVersion, setBotsVersion] = useState(0)
   const activeRef = useRef(active)
@@ -225,6 +226,8 @@ export default function CoworkView(): JSX.Element {
     [loadList, deliverFirst]
   )
 
+  const [routines] = useRoutines(call)
+  const findings = routines.some((r) => r.lastRun && !r.lastRun.seen && (r.lastRun.status === 'failed' || (r.lastRun.status === 'ok' && r.scope === 'report')))
   const canChat = useCallback((agent: string) => CHAT_AGENTS.includes(agent) || (agent === 'custom-agent' && chatCustom), [chatCustom])
   const agentName = useCallback((id: string) => launchers.find((l) => l.id === id)?.name ?? id, [launchers])
 
@@ -293,7 +296,11 @@ export default function CoworkView(): JSX.Element {
         <div className="cw-side-foot">
           <button className={`cw-nav ${!active && page === 'bots' ? 'on' : ''}`} onClick={() => { setPage('bots'); setActive(null) }}>
             <span>{t('cw.bots')}</span>
-            {channels.some((c) => c.pendingApprovals > 0) && <span className="cw-badge warn">{t('cw.needsYou')}</span>}
+            {(channels.some((c) => c.pendingApprovals > 0) || findings) && <span className="cw-badge warn">{t('cw.needsYou')}</span>}
+          </button>
+          <button className={`cw-nav ${!active && page === 'routines' ? 'on' : ''}`} onClick={() => { setPage('routines'); setActive(null) }}>
+            <span>{t('cw.routines')}</span>
+            {routines.some((r) => r.enabled) && <span className="cw-muted">{routines.filter((r) => r.enabled).length}</span>}
           </button>
           {stop?.requested ? (
             <div className="cw-stopped">
@@ -323,7 +330,10 @@ export default function CoworkView(): JSX.Element {
             remember(`wb-cowork-agent:${workspaceRoot}`, agent)
             setPage('home')
           }}
+          extra={<RoutineFindings routines={routines} call={call} onOpen={(id) => setActive(id)} />}
         />
+      ) : page === 'routines' ? (
+        <RoutinesView call={call} launchers={launchers} canChat={canChat} routines={routines} onOpen={(id) => setActive(id)} />
       ) : (
         <Home launchers={launchers} canChat={canChat} onStart={start} busy={busy} />
       )}

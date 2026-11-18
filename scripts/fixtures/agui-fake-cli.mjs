@@ -88,7 +88,16 @@ async function take(m) {
     return
   }
   await ready
-  const free = /for your role \(([^)]*)\), reply with exactly PASS/.exec(text)
+  if (text.includes('please fail')) {
+    out({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'the fake failed on purpose' })
+    return
+  }
+  // What the CLI was started with, for checks that look at its mode
+  if (text.includes('show argv')) {
+    say(`m${++n}`, `argv:${argv.join(' ')}`)
+    return done()
+  }
+  const free =/for your role \(([^)]*)\), reply with exactly PASS/.exec(text)
   if (free && !text.slice(0, free.index).includes(free[1])) {
     say(`m${++n}`, 'PASS')
     return done()

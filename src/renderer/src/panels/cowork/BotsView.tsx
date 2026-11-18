@@ -27,7 +27,7 @@ export default function BotsView({
   /** Opens the home page with this Bot picked */
   onStart: (agent: string) => void
   onSaved: () => void
-  /** More "Needs you" rows (routines' findings) */
+  /** More "Needs you" rows: routines' findings and failures */
   extra?: JSX.Element | null
 }): JSX.Element {
   const { t } = useTranslation()
@@ -56,7 +56,7 @@ export default function BotsView({
         <h1>{t('cw.botsTitle')}</h1>
         <section className="cw-sec" aria-label={t('cw.needsYou')}>
           <div className="cw-sec-title">{t('cw.needsYou')}</div>
-          {waiting.length === 0 && !extra && <p className="cw-muted">{t('cw.nothingWaiting')}</p>}
+          {waiting.length === 0 && <p className="cw-muted">{t('cw.nothingWaiting')}</p>}
           {waiting.map((c) => (
             <button key={c.id} className="cw-conv" onClick={() => onOpen(c.id)}>
               {c.lead ? <AgentMark agent={markOf(c.lead.agent)} size={20} /> : <span className="cw-orb" />}
