@@ -84,7 +84,7 @@ try {
   const [L, A, B] = [await node(), await node(), await node()]
   for (const n of [L, A, B]) {
     await until(async () => (await rt(n))?.status === 'running', `${n} running`)
-    await until(async () => /FAKE-TEAM ready tools=team_info,read_inbox,send_message,assign_task,report,get_member_changes,request_merge/.test(await screen((await rt(n)).ptyId)), `${n} got all seven tools from wb-hook mcp`)
+    await until(async () => /FAKE-TEAM ready tools=team_info,read_inbox,send_message,assign_task,post_task,claim_task,report,ask_person,get_member_changes,request_merge/.test((await screen((await rt(n)).ptyId)).replace(/\r?\n/g, '')), `${n} got all ten tools from wb-hook mcp`)
   }
   const wt = (n: string) => view().then((v) => v.channel.nodes.find((x: any) => x.id === n).worktree)
   for (const n of [L, A, B]) cwdOf.set(n, (await wt(n)).path)

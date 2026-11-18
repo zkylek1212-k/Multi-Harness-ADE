@@ -8,7 +8,7 @@ import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelSummary, ChannelView, NodeMode, StopState } from '../../../../shared/canvas'
-import Conversation from './Conversation'
+import Conversation, { leadOf } from './Conversation'
 import Workspace from './Workspace'
 import { ago, BUILTIN_AGENTS, CHAT_AGENTS, markOf, recall, remember, type CanvasCall } from './types'
 
@@ -136,6 +136,8 @@ export default function CoworkView(): JSX.Element {
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** The Bot shown in the conversation; null = its lead */
+  const [focus, setFocus] = useState<string | null>(null)
   const activeRef = useRef(active)
   activeRef.current = active
   /** A terminal conversation's first message, waiting for its CLI prompt */
@@ -175,6 +177,7 @@ export default function CoworkView(): JSX.Element {
   useEffect(() => {
     remember(storeKey, active)
     setView(null)
+    setFocus(null)
     if (!active) return
     void call('channel.get', { channelId: active }).then((v) => {
       if (v && activeRef.current === active) {
@@ -229,7 +232,8 @@ export default function CoworkView(): JSX.Element {
       setActive(channelId)
       const node = await call('node.create', { channelId, agent, workspace: 'worktree', mode })
       if (!node) return false
-      if (mode === 'chat') await call('chat.prompt', { channelId, nodeId: node.id, text })
+      // Through the group's inbox, so the first turn carries the brief and the team tools are explained
+      if (mode === 'chat') await call('chat.send', { channelId, text })
       else first.current = { channelId, nodeId: node.id, text, until: Date.now() + FIRST_MESSAGE_WAIT_MS }
       void loadList()
       return true
@@ -297,11 +301,11 @@ export default function CoworkView(): JSX.Element {
       </nav>
 
       {active && view ? (
-        <Conversation view={view} call={call} agentName={agentName} panelOpen={panel} onTogglePanel={togglePanel} />
+        <Conversation view={view} call={call} agentName={agentName} launchers={launchers} canChat={canChat} focusId={focus} onFocus={setFocus} panelOpen={panel} onTogglePanel={togglePanel} />
       ) : (
         <Home launchers={launchers} canChat={canChat} onStart={start} busy={busy} />
       )}
-      {active && view && panel && <Workspace view={view} call={call} onClose={togglePanel} />}
+      {active && view && panel && <Workspace view={view} call={call} nodeId={focus && view.channel.nodes.some((n) => n.id === focus) ? focus : leadOf(view)} onClose={togglePanel} />}
       {error && (
         <div className="cw-toast" role="alert">
           {error}

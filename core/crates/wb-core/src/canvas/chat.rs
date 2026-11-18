@@ -120,7 +120,20 @@ fn on_out(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &s
     }
 }
 
+/// A chat node's stand-in for a PTY id in the canvas maps, so team tools find it by its token
+fn chat_tag(generation: &str) -> String {
+    format!("chat:{generation}")
+}
+
+fn forget_tag(core: &Core, tag: &str) {
+    if let Ok(app) = app(core) {
+        app.ptys.lock().unwrap().remove(tag);
+        app.hooks.lock().unwrap().retain(|_, p| p != tag);
+    }
+}
+
 fn on_ended(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: &str, code: Option<i32>, stderr: String) {
+    forget_tag(core, &chat_tag(generation));
     {
         let mut st = repo.st.lock().unwrap();
         let st = &mut *st;
@@ -132,6 +145,7 @@ fn on_ended(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, generation: 
         let failed = rt.status == "running" && code != Some(0) && !stderr.trim().is_empty();
         rt.chat = None;
         rt.generation = None;
+        rt.hook_token = None;
         rt.in_run = false;
         rt.exit_code = code;
         rt.status = if has_wt { "pending-cleanup" } else { "exited" };
@@ -156,14 +170,28 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
     let (command, mut args, env) = core.agent_process(&node.agent).map_err(|e| err("invalid", e))?;
     let thread = key(ch, &node.id);
     let resume = node.session.as_deref();
+    let cli = match proto {
+        "claude-stream-json" => "claude",
+        "codex-app-server" => "codex",
+        _ => "agy",
+    };
+    // The team tools (wb-hook mcp), found by this token the way a terminal node's are
+    let mount = crate::approval_hook::mount_chat(core, cli, &node.agent);
+    let member = !team::leads(&repo.st.lock().unwrap(), ch, &node.id);
     let harness: Box<dyn Harness> = match proto {
         "claude-stream-json" => {
             args.extend(claude::args(resume, CLAUDE_MODE, None));
+            args.extend(mount.args);
+            // Only the lead writes the shared memory (§12.1); a shell write is only held back by the brief
+            if member {
+                args.push(format!("--disallowedTools=Edit({}/**)", crate::worktree::MEMORY));
+            }
             Box::new(claude::Claude::new(&thread))
         }
         "codex-app-server" => {
             codex_protocol_ok(core, &command, &args, &env)?;
             args.extend(crate::agui::codex::args());
+            args.extend(mount.args);
             Box::new(Codex::new(&thread, &cwd, resume, CODEX_SANDBOX))
         }
         _ => {
@@ -171,16 +199,26 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
             Box::new(Acp::new(&thread, &cwd, resume))
         }
     };
+    let mut env = env;
+    env.extend(mount.env);
     let generation = uuid();
+    let tag = chat_tag(&generation);
     {
         let mut st = repo.st.lock().unwrap();
         let rt = st.rt.entry(key(ch, &node.id)).or_default();
-        *rt = NodeRt { status: "creating", generation: Some(generation.clone()), ..Default::default() };
+        *rt = NodeRt { status: "creating", generation: Some(generation.clone()), hook_token: mount.token.clone(), ..Default::default() };
+    }
+    if let (Some(t), Ok(app)) = (&mount.token, app(core)) {
+        app.ptys.lock().unwrap().insert(tag.clone(), (repo.clone(), ch.to_string(), node.id.clone()));
+        app.hooks.lock().unwrap().insert(t.clone(), tag.clone());
     }
     let (c1, r1, ch1, nd1, g1) = (core.clone(), repo.clone(), ch.to_string(), node.id.clone(), generation.clone());
     let sink: Sink = Arc::new(move |o| on_out(&c1, &r1, &ch1, &nd1, &g1, o));
     let (c2, r2, ch2, nd2, g2) = (core.clone(), repo.clone(), ch.to_string(), node.id.clone(), generation.clone());
-    let chat = Chat::spawn(Spawn { command: &command, args: &args, cwd: &cwd, env: &env }, harness, |pid| core.pty.assign_job(pid), sink, move |code, stderr| on_ended(&c2, &r2, &ch2, &nd2, &g2, code, stderr)).map_err(|e| err("invalid", e))?;
+    let chat = Chat::spawn(Spawn { command: &command, args: &args, cwd: &cwd, env: &env }, harness, |pid| core.pty.assign_job(pid), sink, move |code, stderr| on_ended(&c2, &r2, &ch2, &nd2, &g2, code, stderr)).map_err(|e| {
+        forget_tag(core, &tag);
+        err("invalid", e)
+    })?;
     let mut st = repo.st.lock().unwrap();
     if let Some(rt) = st.rt.get_mut(&key(ch, &node.id)) {
         if rt.generation.as_deref() == Some(generation.as_str()) && rt.status == "creating" {
@@ -192,6 +230,9 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
         push_event(c, json!({ "t": "node-started", "at": now_ms(), "node": node.id }));
         let _ = repo.save(c);
     }
+    drop(st);
+    // Mail that came while it was starting
+    team::deliver(core, repo, ch);
     Ok(())
 }
 
@@ -200,22 +241,33 @@ fn running_chat(st: &RepoState, ch: &str, nd: &str) -> R<Arc<Chat>> {
     rt.chat.clone().filter(|_| rt.status == "running").ok_or_else(|| err("not-ready", "The agent is not running"))
 }
 
-/// Sends `text` to a chat node as a new turn and records it; `from` is "user" or the sending node's id
-pub(super) fn prompt(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, text: &str, from: &str) -> R<()> {
+/// Sends `sent` to a chat node as a new turn; the transcript keeps `shown` under `id` (the message's own text, without
+/// the app's envelope or brief). `from` is "user" or the sending node's id.
+pub(super) fn prompt(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, nd: &str, id: &str, shown: &str, sent: &str, from: &str) -> R<()> {
     let chat = {
         let mut st = repo.st.lock().unwrap();
         if st.stop.is_some() {
             return Err(err("stopped", "Stopped"));
         }
         let chat = running_chat(&st, ch, nd)?;
-        let id = short_id();
-        repo.transcripts(&mut st, ch).entry(nd.to_string()).or_default().user(&id, text, from, now_ms());
+        // Busy from now, not from the CLI's first event: the next delivery must wait for this turn
+        if let Some(rt) = st.rt.get_mut(&key(ch, nd)) {
+            rt.in_run = true;
+        }
+        let at = now_ms();
+        repo.transcripts(&mut st, ch).entry(nd.to_string()).or_default().user(id, shown, from, at);
         repo.save_transcripts(&st, ch);
-        live(core, repo, ch, nd, json!({ "entry": Entry::User { id, text: text.into(), from: from.into(), at: now_ms() } }));
+        live(core, repo, ch, nd, json!({ "entry": Entry::User { id: id.into(), text: shown.into(), from: from.into(), at } }));
         chat
     };
-    chat.prompt(text);
+    chat.prompt(sent);
+    emit(core, repo, ch);
     Ok(())
+}
+
+/// A chat node that can take the next turn: running, between turns, nothing waiting on the user
+pub(super) fn ready(st: &RepoState, ch: &str, nd: &str) -> bool {
+    st.rt.get(&key(ch, nd)).is_some_and(|r| r.chat.is_some() && r.status == "running" && !r.in_run) && pending(st, ch, nd) == 0 && st.stop.is_none()
 }
 
 pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value) -> R<Value> {
@@ -226,7 +278,8 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
             if text.trim().is_empty() || text.len() > MAX_TEXT {
                 return Err(err("invalid", "Empty or too long"));
             }
-            prompt(core, repo, ch, nd, &sanitize_text(text, true), "user")?;
+            let text = sanitize_text(text, true);
+            prompt(core, repo, ch, nd, &short_id(), &text, &text, "user")?;
             Ok(Value::Null)
         }
         "chat.interrupt" => {

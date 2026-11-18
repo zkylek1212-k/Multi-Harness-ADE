@@ -18,6 +18,28 @@ export interface Channel {
   teams?: Team[]
   /** What each node works on, keyed by node id; set by assign_task, report or the user */
   tasks?: Record<string, NodeTask>
+  /** Tasks the lead posted for any member to claim (cowork-agui-implement.md §6.8) */
+  board?: BoardTask[]
+}
+
+export interface BoardTask {
+  id: string
+  title: string
+  details: string
+  doneWhen: string
+  /** returned: nobody claimed it in 5 minutes; the lead decides */
+  status: 'open' | 'claimed' | 'returned'
+  claimedBy?: string
+  at: number
+}
+
+/** An ask_person question waiting for the user (§6.4) */
+export interface PersonAsk {
+  id: string
+  node: string
+  question: string
+  choices: string[]
+  at: number
 }
 
 export type RelayMode = 'approve' | 'lead-auto' | 'auto'
@@ -41,6 +63,8 @@ export interface Team {
   pausedReason?: string
   /** Members may message each other directly (cowork-agui-implement.md §8.3) */
   membersTalk?: boolean
+  /** The user's messages without an @ go to every Bot; each answers PASS when it is not for its role (§6.8) */
+  freeTalk?: boolean
   limits: { maxMessages: number; perMemberPer10Min: number }
   startedAt?: number
   messageCount: number
@@ -53,6 +77,8 @@ export interface NodeTask {
   updatedAt: number
   /** Who gave the task: the lead (reports go back to the lead) or the user (reports go to the chat) */
   source: 'assign' | 'user'
+  /** A member's suggestion for the shared memory; the lead writes it (§12.1) */
+  memory?: string
 }
 
 export interface TeamMessage {
@@ -62,11 +88,14 @@ export interface TeamMessage {
   from: string
   /** A node id, or 'user' for an agent's report into the chat */
   to: string
-  kind: 'task' | 'message' | 'report' | 'system'
+  /** free: the user's message to every Bot in free talk */
+  kind: 'task' | 'message' | 'report' | 'system' | 'free'
   /** Untrusted when from an agent; never shown as HTML */
   text: string
   at: number
   state: 'pending-approval' | 'queued' | 'notified' | 'read' | 'rejected'
+  /** One free-talk message to several Bots shares this id */
+  group?: string
 }
 
 /** A lead's request to merge a member's branch into its own worktree, waiting for the user */
@@ -90,6 +119,8 @@ export interface CanvasNode {
   mode?: NodeMode
   /** The CLI's own session id (chat nodes), for resume */
   session?: string
+  /** What this Bot does in the group; claiming and PASS go by it */
+  role?: string
 }
 
 export type ChannelEvent =
@@ -105,6 +136,8 @@ export type ChannelEvent =
   | { t: 'relay'; at: number; id: string; decision: 'approved' | 'rejected'; via?: 'phone' }
   | { t: 'task'; at: number; node: string; status: NodeTask['status']; team?: string }
   | { t: 'team-merge'; at: number; team: string; member: string; decision: 'requested' | 'approved' | 'rejected' | 'auto'; id?: string }
+  | { t: 'board'; at: number; id: string; status: 'open' | 'claimed'; node?: string }
+  | { t: 'ask'; at: number; node: string; id: string }
 
 // ---------- runtime (backend-owned, not persisted) ----------
 
@@ -174,6 +207,8 @@ export interface ChannelView {
   mergeRequests: TeamMergeRequest[]
   /** The channel's latest team messages, newest first, at most 100 */
   messages: TeamMessage[]
+  /** ask_person questions of running sessions */
+  asks?: PersonAsk[]
 }
 
 export interface NodeTeamRuntime {
@@ -259,7 +294,8 @@ export interface CanvasOps {
   'channel.rename': { req: { channelId: string; name: string }; res: void }
   /** Refused while any node still has a process or a worktree */
   'channel.delete': { req: { channelId: string }; res: void }
-  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode }; res: CanvasNode }
+  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode; role?: string }; res: CanvasNode }
+  'node.role': { req: { channelId: string; nodeId: string; role: string }; res: void }
   'node.restart': { req: { channelId: string; nodeId: string }; res: void }
   /** Invalidates approvals, kills the PTY and waits for exit; keeps the worktree (pending-cleanup) */
   'node.close': { req: { channelId: string; nodeId: string }; res: void }
@@ -285,16 +321,20 @@ export interface CanvasOps {
   /** The last lines on a node's screen, for the Take Over panel */
   'node.screen': { req: { channelId: string; nodeId: string }; res: string }
   // ---------- groups (cowork-team-implement.md): the channel is the group ----------
-  /** The user's own message: typed into the agent's terminal and sent. `to` defaults to the lead. Resumes a paused group. */
+  /** The user's own message: a chat node's next turn, or typed into a terminal and sent. `to` defaults to the lead (every Bot in
+   *  free talk). Resumes a paused group. */
   'chat.send': { req: { channelId: string; to?: string; text: string }; res: void }
   'node.takeControl': { req: { channelId: string; nodeId: string }; res: void }
   'node.handBack': { req: { channelId: string; nodeId: string }; res: void }
   'chat.prompt': { req: { channelId: string; nodeId: string; text: string }; res: void }
   'chat.interrupt': { req: { channelId: string; nodeId: string }; res: void }
   'chat.answer': { req: { channelId: string; nodeId: string; approvalId: string; allow: boolean; forSession?: boolean }; res: void }
-  'chat.transcript': { req: { channelId: string; nodeId: string }; res: Transcript }
+  /** Without nodeId: every chat node's, keyed by node id */
+  'chat.transcript': { req: { channelId: string; nodeId?: string }; res: Transcript }
+  /** The answer goes back to the Bot as the user's next message */
+  'ask.answer': { req: { channelId: string; askId: string; text: string }; res: void }
   /** Who leads, how agent messages are relayed, and the caps */
-  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits']; membersTalk?: boolean }; res: void }
+  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits']; membersTalk?: boolean; freeTalk?: boolean }; res: void }
   'team.resume': { req: { channelId: string }; res: void }
   'team.pause': { req: { channelId: string }; res: void }
   /** Newest first, at most 200 */

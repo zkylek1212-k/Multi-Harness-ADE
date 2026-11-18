@@ -8,6 +8,8 @@ use super::{Approval, Event, INTERRUPTED};
 pub const MAX_ENTRIES: usize = 2000;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_ARGS: usize = 8 * 1024;
+/// What a bot answers in free talk when a message is not for its role (cowork-agui-implement.md §6.8); never kept
+pub const PASS: &str = "PASS";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -156,9 +158,9 @@ impl Transcript {
                     }
                 }
             }
-            // Text that never got content is noise
+            // Text that never got content is noise, and so is a free-talk PASS
             Event::TextMessageEnd { message_id } => {
-                if let Some(i) = self.entries.iter().rposition(|e| matches!(e, Entry::Text { id, text, .. } if id == message_id && text.trim().is_empty())) {
+                if let Some(i) = self.entries.iter().rposition(|e| matches!(e, Entry::Text { id, text, .. } if id == message_id && (text.trim().is_empty() || text.trim() == PASS))) {
                     self.entries.remove(i);
                 }
             }
@@ -206,6 +208,17 @@ mod tests {
         t.approval(&Approval { id: "a2".into(), ..a }, 2.0);
         t.expire_pending();
         assert!(matches!(&t.entries[1], Entry::Approval { status, .. } if status == "expired"));
+    }
+
+    #[test]
+    fn a_pass_leaves_nothing() {
+        let mut t = Transcript::default();
+        for (id, text) in [("a", " PASS\n"), ("b", "PASS on this one: I can help")] {
+            t.apply(&Event::TextMessageStart { message_id: id.into(), role: "assistant".into() }, 0.0);
+            t.apply(&Event::TextMessageContent { message_id: id.into(), delta: text.into() }, 0.0);
+            t.apply(&Event::TextMessageEnd { message_id: id.into() }, 0.0);
+        }
+        assert_eq!(t.entries.len(), 1, "only an exact PASS is dropped");
     }
 
     #[test]

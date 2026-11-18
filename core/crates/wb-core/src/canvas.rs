@@ -80,6 +80,9 @@ struct Node {
     /// The CLI's own session id, for resuming a chat node after a restart
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<String>,
+    /// One line on what this bot does in the group ("backend and API"); claiming and PASS go by it (§6.8)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -96,6 +99,9 @@ struct Channel {
     /// What each node is working on, for the Feed cards; keyed by node id
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     tasks: std::collections::BTreeMap<String, team::NodeTask>,
+    /// Tasks posted for any member to claim (§6.8)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    board: Vec<team::BoardTask>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -177,6 +183,8 @@ struct RepoState {
     briefed: HashSet<String>,
     /// Chat nodes' conversations per channel, by node id; loaded on first use
     transcripts: HashMap<String, std::collections::BTreeMap<String, crate::agui::transcript::Transcript>>,
+    /// ask_person questions waiting for the user, by channel/node; one per node
+    asks: HashMap<String, team::Ask>,
 }
 
 struct Repo {
@@ -564,6 +572,10 @@ fn current_branch(repo: &Repo) -> R<String> {
     g::git(&repo.root, &["symbolic-ref", "--short", "HEAD"]).map(|s| s.trim().to_string()).map_err(|_| err("invalid", "The repository is not on a branch"))
 }
 
+fn role_of(req: &Value) -> Option<String> {
+    Some(js_prefix(sanitize_text(s(req, "role"), false).trim(), 200)).filter(|r| !r.is_empty())
+}
+
 fn sanitize_text(text: &str, keep_newlines: bool) -> String {
     let t = text.replace("\r\n", "\n").replace('\r', "\n");
     t.chars().filter(|c| (keep_newlines && (*c == '\n' || *c == '\t')) || !(c.is_control() || ('\u{80}'..='\u{9f}').contains(c))).collect()
@@ -603,7 +615,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 if st.channels.len() >= MAX_CHANNELS {
                     return Err(err("invalid", "Too many channels"));
                 }
-                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], events: vec![], teams: vec![], tasks: Default::default(), board: vec![] };
                 repo.save(&c)?;
                 st.channels.insert(id.clone(), c);
             }
@@ -652,6 +664,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 _ => return Err(err("invalid", format!("{agent} has no chat mode"))),
             };
             let in_root = s(req, "workspace") == "root";
+            let role = role_of(req);
             let id = short_id();
             {
                 let mut st = repo.st.lock().unwrap();
@@ -667,7 +680,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                     return Err(err("invalid", "Too many nodes"));
                 }
                 // The record comes first, so a failure below still leaves something to inspect and retry
-                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None });
+                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None, role });
                 team::sync_group(c);
                 repo.save(c)?;
                 st.rt.insert(key(&ch, &id), NodeRt { status: "creating", ..Default::default() });
@@ -699,6 +712,17 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let out = result.map_err(fail);
             emit(core, &repo, &ch);
             out
+        }
+        "node.role" if origin == Origin::Desktop => {
+            {
+                let mut st = repo.st.lock().unwrap();
+                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
+                let n = c.nodes.iter_mut().find(|n| n.id == nd).ok_or_else(|| err("not-found", "node"))?;
+                n.role = role_of(req);
+                repo.save(c)?;
+            }
+            emit(core, &repo, &ch);
+            Ok(Value::Null)
         }
         "node.restart" => {
             let node = {
@@ -916,7 +940,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
         op if op.starts_with("chat.") && op != "chat.send" => chat::dispatch(core, &repo, op, req),
         "node.takeControl" if origin == Origin::Desktop => chat::take_control(core, &repo, &ch, &nd).map(|_| Value::Null),
         "node.handBack" if origin == Origin::Desktop => chat::hand_back(core, &repo, &ch, &nd).map(|_| Value::Null),
-        op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") || op == "chat.send" => team::dispatch(core, &repo, op, req, origin),
+        op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") || op == "chat.send" || op == "ask.answer" => team::dispatch(core, &repo, op, req, origin),
         _ => Err(err("invalid", format!("Unknown canvas operation: {}", js_prefix(op, 40)))),
     }
 }
@@ -1154,6 +1178,10 @@ pub fn hook_request(core: &Arc<Core>, token: &str, card: Value, wait: Duration) 
             return HookDecision::Pass;
         }
         let Some(rt) = st.rt.get_mut(&key(&ch, &nd)) else { return HookDecision::Pass };
+        // A chat node asks through its harness; agy's user-wide hook still runs there and gets handed back
+        if rt.chat.is_some() {
+            return HookDecision::Pass;
+        }
         let Some(generation) = rt.generation.clone() else { return HookDecision::Pass };
         // One card per node: an overlapping request goes back to the CLI rather than replacing the current one
         if rt.approval.as_ref().is_some_and(|a| a.source == "hook") {
@@ -1230,8 +1258,8 @@ mod tests {
 
     #[test]
     fn channel_validation_rejects_bad_ids() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None };
-        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default() };
+        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None, role: None };
+        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default(), board: vec![] };
         assert!(channel_ok(&c));
         c.nodes.push(n("../x"));
         assert!(!channel_ok(&c), "path in an id");

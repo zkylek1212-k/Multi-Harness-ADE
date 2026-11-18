@@ -187,7 +187,7 @@ fn git_guard(dir: &Path) -> Result<BTreeMap<String, String>> {
 /// Shared project memory (.project-memory) is not in git, so a new worktree would not have it. Each node worktree gets a
 /// link to the main checkout's memory; removal takes the link away first, because a recursive delete on Windows goes
 /// through junctions and would delete the memory itself (memory: worktree-junction-deletes-target).
-const MEMORY: &str = ".project-memory";
+pub const MEMORY: &str = ".project-memory";
 
 fn memory_link(wt: &Path) -> Option<PathBuf> {
     let link = wt.join(MEMORY);

@@ -4,13 +4,13 @@ import { useTranslation } from '@/i18n'
 import type { ChannelView } from '../../../../shared/canvas'
 import { toolSummary } from '../../../../shared/agui'
 import Changes from './Changes'
-import { useTranscript } from './Conversation'
+import { useTranscripts } from './Conversation'
 import type { CanvasCall } from './types'
 
 function Activity({ view, call, nodeId }: { view: ChannelView; call: CanvasCall; nodeId: string }): JSX.Element {
   const { t } = useTranslation()
   const isChat = view.channel.nodes.find((n) => n.id === nodeId)?.mode === 'chat'
-  const tools = useTranscript(call, view.channel.id, nodeId, isChat).filter((e) => e.kind === 'tool')
+  const tools = (useTranscripts(call, view.channel.id, isChat)[nodeId] ?? []).filter((e) => e.kind === 'tool')
   if (!isChat) return <p className="cw-muted">{t('cw.activityTerminal')}</p>
   if (tools.length === 0) return <p className="cw-muted">{t('cw.activityEmpty')}</p>
   return (
@@ -29,10 +29,11 @@ function Activity({ view, call, nodeId }: { view: ChannelView; call: CanvasCall;
   )
 }
 
-export default function Workspace({ view, call, onClose }: { view: ChannelView; call: CanvasCall; onClose: () => void }): JSX.Element {
+/** For the Bot shown in the conversation (`nodeId`): the lead, or the member the user opened */
+export default function Workspace({ view, call, nodeId, onClose }: { view: ChannelView; call: CanvasCall; nodeId: string; onClose: () => void }): JSX.Element {
   const { t } = useTranslation()
   const [tab, setTab] = useState<'changes' | 'activity'>('changes')
-  const lead = view.channel.nodes[0]
+  const lead = view.channel.nodes.find((n) => n.id === nodeId)
   return (
     <aside className="cw-panel" aria-label={t('cw.workspace')}>
       <div className="cw-row">

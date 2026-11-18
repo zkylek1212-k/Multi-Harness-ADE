@@ -178,3 +178,22 @@
 
 .cw-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--cw-dark); color: var(--cw-on-dark); border-radius: 10px; padding: 8px 8px 8px 14px; display: flex; align-items: center; gap: 8px; max-width: min(640px, 90%); z-index: 10; font-size: 13px; }
 .cw-toast .cw-icon { color: inherit; }
+
+/* group (cowork-agui-implement.md §6.8, §8.3): the Bots, cards that wait for you, delegated tasks */
+.cw-members { display: flex; flex-direction: column; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--cw-line); }
+.cw-member { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--cw-line); background: var(--cw-surface); border-radius: 999px; padding: 3px 10px; min-height: 30px; cursor: pointer; font-size: 12.5px; max-width: 320px; }
+.cw-member.on { border-color: var(--cw-dark); }
+.cw-member-role { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--cw-side); color: var(--cw-dim); }
+.cw-badge.warn, .cw-badge.st-blocked, .cw-badge.st-failed { color: var(--cw-amber); }
+.cw-badge.st-done { color: var(--cw-green); }
+.cw-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; min-height: 30px; }
+.cw-addbot { padding: 6px 0 2px; }
+.cw-addbot .cw-input { min-width: 160px; }
+.cw-needs, .cw-tasks { display: flex; flex-direction: column; gap: 10px; }
+.cw-ask-q, .cw-pre-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cw-task { gap: 6px; }
+.cw-task-title { font-weight: 600; overflow-wrap: anywhere; }
+.cw-memory { font-size: 12.5px; background: var(--cw-side); border-radius: 8px; padding: 6px 10px; }
+.cw-by { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--cw-line); }
+.cw-pick { border: 0; cursor: pointer; }
