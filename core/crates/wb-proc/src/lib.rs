@@ -2,7 +2,9 @@
 pub mod job;
 pub mod launch;
 pub mod runner;
+pub mod stream;
 
 pub use job::KillOnCloseJob;
 pub use launch::{launch_plan, resolve_command, LaunchPlan, Resolved};
 pub use runner::{run_process, CancelToken, RunResult, RunSpec};
+pub use stream::{spawn_lines, LineProcess};

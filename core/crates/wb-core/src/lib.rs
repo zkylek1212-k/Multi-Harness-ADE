@@ -1,4 +1,5 @@
 //! The whole backend behind one call, independent of any UI framework.
+pub mod agui;
 pub mod approval_hook;
 pub mod bgtasks;
 pub mod canvas;

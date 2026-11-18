@@ -1,6 +1,8 @@
 // Cowork 2.0 canvas: the contract between wb-core (canvas.rs) and the UI. Spec: cowork2.0-implement.md §3.
 // Persisted shapes first, then runtime state that the backend owns and never writes to disk, then the IPC ops.
 
+import type { Transcript } from './agui'
+
 export type CanvasResult<T> = { ok: true; data: T } | { ok: false; code: string; message?: string; data?: unknown }
 
 // ---------- persisted: <git common dir>/cowork/channels/<channelId>.json ----------
@@ -10,7 +12,6 @@ export interface Channel {
   id: string
   name: string
   nodes: CanvasNode[]
-  edges: HandoffEdge[]
   /** Newest last, truncated by the backend; Feed and phone read this */
   events: ChannelEvent[]
   /** The channel's group: at most one entry, kept by the backend (id "main"). A channel is a group of agents. */
@@ -38,7 +39,8 @@ export interface Team {
   status: 'running' | 'paused'
   /** Why it stopped running: the user, the stop, or a cap (only in lead-auto and auto) */
   pausedReason?: string
-  bounds: { x: number; y: number; width: number; height: number }
+  /** Members may message each other directly (cowork-agui-implement.md §8.3) */
+  membersTalk?: boolean
   limits: { maxMessages: number; perMemberPer10Min: number }
   startedAt?: number
   messageCount: number
@@ -84,17 +86,10 @@ export interface CanvasNode {
   agent: string
   /** Absent = works in the repo root (one per repo, enforced by the backend) */
   worktree?: { path: string; branch: string; baseCommit: string }
-  position: { x: number; y: number }
-  size: { width: number; height: number }
-}
-
-export interface HandoffEdge {
-  id: string
-  from: string
-  to: string
-  at: number
-  /** The draft built at the time; not proof it was pasted or received */
-  text: string
+  /** Absent = terminal */
+  mode?: NodeMode
+  /** The CLI's own session id (chat nodes), for resume */
+  session?: string
 }
 
 export type ChannelEvent =
@@ -132,6 +127,8 @@ export interface NodeRuntime {
   approval: ApprovalRequest | null
   /** Proxy mode the session started with; differs from settings => UI says restart needed */
   proxyMode?: 'inherit' | 'custom' | 'direct'
+  /** A chat node is in the middle of a turn */
+  inRun?: boolean
 }
 
 export interface ApprovalFile {
@@ -193,7 +190,12 @@ export interface ChannelSummary {
   nodeCount: number
   pendingApprovals: number
   updatedAt: number
+  /** The conversation's own agent: its first node */
+  lead: { nodeId: string; agent: string; mode: NodeMode; status: NodeStatus; inRun: boolean; branch?: string } | null
 }
+
+/** chat: headless CLI behind AG-UI (cowork-agui-implement.md); terminal: the CLI's own TUI in a PTY */
+export type NodeMode = 'chat' | 'terminal'
 
 // ---------- worktree operations (§3.3) ----------
 
@@ -257,9 +259,7 @@ export interface CanvasOps {
   'channel.rename': { req: { channelId: string; name: string }; res: void }
   /** Refused while any node still has a process or a worktree */
   'channel.delete': { req: { channelId: string }; res: void }
-  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; position: CanvasNode['position']; size: CanvasNode['size'] }; res: CanvasNode }
-  /** Layout only; size change also resizes the PTY once (resize_ordered) */
-  'node.layout': { req: { channelId: string; nodeId: string; position: CanvasNode['position']; size: CanvasNode['size'] }; res: void }
+  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode }; res: CanvasNode }
   'node.restart': { req: { channelId: string; nodeId: string }; res: void }
   /** Invalidates approvals, kills the PTY and waits for exit; keeps the worktree (pending-cleanup) */
   'node.close': { req: { channelId: string; nodeId: string }; res: void }
@@ -276,8 +276,6 @@ export interface CanvasOps {
   /** Bracketed paste without Enter; refused unless running, inputReady, no pending approval, not stopped */
   'node.message': { req: { channelId: string; nodeId: string; sessionGeneration: string; text: string }; res: void }
   /** Builds the draft from git (branch, commits, files, uncommitted state) + note; never writes to a PTY */
-  'handoff.create': { req: { channelId: string; from: string; to: string; note: string }; res: HandoffEdge }
-  'edge.remove': { req: { channelId: string; edgeId: string }; res: void }
   /** Stage 1 for every Cowork node of this repo, all channels and windows: one Esc each */
   'stop': { req: void; res: StopState }
   /** Stage 2, only while stopped: kill_pty and confirm exit */
@@ -289,8 +287,14 @@ export interface CanvasOps {
   // ---------- groups (cowork-team-implement.md): the channel is the group ----------
   /** The user's own message: typed into the agent's terminal and sent. `to` defaults to the lead. Resumes a paused group. */
   'chat.send': { req: { channelId: string; to?: string; text: string }; res: void }
+  'node.takeControl': { req: { channelId: string; nodeId: string }; res: void }
+  'node.handBack': { req: { channelId: string; nodeId: string }; res: void }
+  'chat.prompt': { req: { channelId: string; nodeId: string; text: string }; res: void }
+  'chat.interrupt': { req: { channelId: string; nodeId: string }; res: void }
+  'chat.answer': { req: { channelId: string; nodeId: string; approvalId: string; allow: boolean; forSession?: boolean }; res: void }
+  'chat.transcript': { req: { channelId: string; nodeId: string }; res: Transcript }
   /** Who leads, how agent messages are relayed, and the caps */
-  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits'] }; res: void }
+  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits']; membersTalk?: boolean }; res: void }
   'team.resume': { req: { channelId: string }; res: void }
   'team.pause': { req: { channelId: string }; res: void }
   /** Newest first, at most 200 */

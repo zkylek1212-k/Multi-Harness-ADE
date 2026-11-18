@@ -15,7 +15,9 @@ use crate::pty::PtyEvent;
 use crate::util::{js_prefix, now_ms, p, read_json_with_fallback, real_path, uuid, write_json_atomic};
 use crate::worktree::{self as wt, NodeWorktree};
 
+mod chat;
 mod team;
+pub use chat::AGUI_EVENT;
 pub use team::{mcp_call, mcp_request, tool_names};
 
 pub const UPDATE_EVENT: &str = "canvas:update";
@@ -65,18 +67,6 @@ pub fn wrap(r: R<Value>) -> Value {
 
 // ---------- persisted shapes (src/shared/canvas.ts) ----------
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
-struct Pos {
-    x: f64,
-    y: f64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
-struct Size {
-    width: f64,
-    height: f64,
-}
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Node {
@@ -84,17 +74,12 @@ struct Node {
     agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     worktree: Option<NodeWorktree>,
-    position: Pos,
-    size: Size,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Edge {
-    id: String,
-    from: String,
-    to: String,
-    at: f64,
-    text: String,
+    /// "chat": the CLI runs headless behind an AG-UI harness (canvas/chat.rs); absent: a terminal node
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    /// The CLI's own session id, for resuming a chat node after a restart
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -104,7 +89,6 @@ struct Channel {
     id: String,
     name: String,
     nodes: Vec<Node>,
-    edges: Vec<Edge>,
     events: Vec<Value>,
     /// Teams of nodes working together (cowork-team-implement.md); missing in files from before teams
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -122,14 +106,6 @@ fn short_id() -> String {
     uuid().replace('-', "")[..10].to_string()
 }
 
-fn pos_ok(p: Pos) -> bool {
-    p.x.is_finite() && p.y.is_finite() && p.x.abs() <= 1e6 && p.y.abs() <= 1e6
-}
-
-fn size_ok(s: Size) -> bool {
-    s.width.is_finite() && s.height.is_finite() && (200.0..=4000.0).contains(&s.width) && (120.0..=3000.0).contains(&s.height)
-}
-
 /// Structural check for a loaded file; anything else is treated as damaged and never overwritten
 fn channel_ok(c: &Channel) -> bool {
     let ids: HashSet<&str> = c.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -138,8 +114,7 @@ fn channel_ok(c: &Channel) -> bool {
         && c.name.chars().count() <= 80
         && c.nodes.len() <= MAX_NODES
         && ids.len() == c.nodes.len()
-        && c.nodes.iter().all(|n| valid_id(&n.id) && !n.agent.is_empty() && n.agent.len() <= 128 && pos_ok(n.position) && size_ok(n.size))
-        && c.edges.iter().all(|e| valid_id(&e.id) && ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()) && e.text.len() <= MAX_TEXT)
+        && c.nodes.iter().all(|n| valid_id(&n.id) && !n.agent.is_empty() && n.agent.len() <= 128)
         && c.events.len() <= MAX_EVENTS
         && team::teams_ok(c)
 }
@@ -178,6 +153,10 @@ struct NodeRt {
     proxy_mode: Option<Value>,
     /// Phase 6: the token wb-hook presents for this session
     hook_token: Option<String>,
+    /// A chat node's process and harness
+    chat: Option<Arc<crate::agui::session::Chat>>,
+    /// A chat node is in the middle of a turn
+    in_run: bool,
 }
 
 #[derive(Default)]
@@ -196,6 +175,8 @@ struct RepoState {
     merge_reqs: HashMap<String, team::MergeReq>,
     /// Session generations that already got the group brief with a chat message
     briefed: HashSet<String>,
+    /// Chat nodes' conversations per channel, by node id; loaded on first use
+    transcripts: HashMap<String, std::collections::BTreeMap<String, crate::agui::transcript::Transcript>>,
 }
 
 struct Repo {
@@ -317,6 +298,7 @@ fn rt_view(core: &Core, rt: &NodeRt, stopped: bool) -> Value {
     json!({
         "status": rt.status, "error": rt.error, "ptyId": rt.pty_id, "sessionGeneration": rt.generation, "busy": busy, "exitCode": rt.exit_code,
         "inputReady": ready, "approval": rt.approval.as_ref().map(approval_view), "proxyMode": rt.proxy_mode.as_ref().and_then(|m| m.get("mode")).cloned(),
+        "inRun": rt.in_run,
     })
 }
 
@@ -499,6 +481,14 @@ fn agy_trusts(root: &Path) -> bool {
 
 /// Spawns the node's CLI and records the new session. Caller holds no repo lock.
 fn launch(core: &Arc<Core>, repo: &Arc<Repo>, channel: &str, node: &Node) -> R<()> {
+    if node.mode.as_deref() == Some(chat::MODE) {
+        return chat::launch(core, repo, channel, node);
+    }
+    launch_pty(core, repo, channel, node, Vec::new())
+}
+
+/// The node's CLI in a PTY; `extra` goes after the app's own args (Take control passes the resume args here)
+fn launch_pty(core: &Arc<Core>, repo: &Arc<Repo>, channel: &str, node: &Node, extra: Vec<String>) -> R<()> {
     let cwd = node.worktree.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| p(&repo.root));
     let builtin = BUILTIN.contains(&node.agent.as_str()) || node.agent == crate::custom_agent::CUSTOM_AGENT_ID;
     let mut opts = json!({ "cwd": cwd, "cols": 120, "rows": 32, "title": format!("{} · {}", node.agent, node.id) });
@@ -511,6 +501,7 @@ fn launch(core: &Arc<Core>, repo: &Arc<Repo>, channel: &str, node: &Node) -> R<(
     let generation = uuid();
     let mount = crate::approval_hook::mount(core, &node.agent);
     args.extend(mount.args);
+    args.extend(extra);
     opts["args"] = json!(args);
     let pty = core.spawn_pty_env(&opts, &p(&repo.root), 0, false, mount.env).map_err(|e| err("invalid", e))?;
     let proxy = core.get_pty_session(&pty).and_then(|i| i.get("proxy").cloned());
@@ -578,37 +569,6 @@ fn sanitize_text(text: &str, keep_newlines: bool) -> String {
     t.chars().filter(|c| (keep_newlines && (*c == '\n' || *c == '\t')) || !(c.is_control() || ('\u{80}'..='\u{9f}').contains(c))).collect()
 }
 
-fn handoff_text(repo: &Repo, from: &Node, note: &str) -> String {
-    let mut out = vec![format!("Handoff from {} node {}", from.agent, from.id)];
-    let dir = from.worktree.as_ref().map(|w| PathBuf::from(&w.path)).unwrap_or_else(|| repo.root.clone());
-    match &from.worktree {
-        Some(w) => {
-            out.push(format!("Worktree: {}", w.path));
-            out.push(format!("Branch: {} (base {})", w.branch, &w.base_commit[..w.base_commit.len().min(12)]));
-            let range = format!("{}..HEAD", w.base_commit);
-            let commits = g::git(&dir, &["log", "--format=%h %s", "-n", "50", &range]).unwrap_or_default();
-            out.push(if commits.trim().is_empty() { "Commits since base: none".into() } else { format!("Commits since base:\n{}", commits.trim_end()) });
-            let files = g::git(&dir, &["diff", "--name-status", "--no-renames", &w.base_commit, "HEAD"]).unwrap_or_default();
-            if !files.trim().is_empty() {
-                out.push(format!("Changed files (committed):\n{}", files.trim_end()));
-            }
-        }
-        None => out.push(format!("Works in the repository root: {}", p(&repo.root))),
-    }
-    let dirty = g::git(&dir, &["status", "--porcelain", "-uall"]).map(|s| s.lines().count()).unwrap_or(0);
-    out.push(if dirty == 0 {
-        "Uncommitted changes: none".into()
-    } else {
-        format!("Uncommitted changes: {dirty} file(s), not part of this handoff; commit and merge them to share the code")
-    });
-    let note = sanitize_text(note, true);
-    if !note.trim().is_empty() {
-        out.push(format!("Note: {}", note.trim()));
-    }
-    // Commit subjects and file names come from another agent: no control characters reach a draft
-    js_prefix(&sanitize_text(&out.join("\n"), true), MAX_TEXT)
-}
-
 fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -> R<Value> {
     let repo = repo_for(core, ws)?;
     repo.load(&mut repo.st.lock().unwrap());
@@ -620,9 +580,14 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 .channels
                 .values()
                 .map(|c| {
-                    let pending = c.nodes.iter().filter(|n| st.rt.get(&key(&c.id, &n.id)).is_some_and(|r| r.approval.is_some())).count();
+                    let pending = c.nodes.iter().filter(|n| st.rt.get(&key(&c.id, &n.id)).is_some_and(|r| r.approval.is_some())).count() + c.nodes.iter().map(|n| chat::pending(&st, &c.id, &n.id)).sum::<usize>();
                     let updated = c.events.last().and_then(|e| e["at"].as_f64()).unwrap_or(0.0);
-                    json!({ "id": c.id, "name": c.name, "nodeCount": c.nodes.len(), "pendingApprovals": pending, "updatedAt": updated })
+                    // The first node is the conversation's own agent (its lead)
+                    let lead = c.nodes.first().map(|n| {
+                        let rt = st.rt.get(&key(&c.id, &n.id));
+                        json!({ "nodeId": n.id, "agent": n.agent, "mode": n.mode.as_deref().unwrap_or("terminal"), "status": rt.map(|r| r.status).unwrap_or("exited"), "inRun": rt.is_some_and(|r| r.in_run || (r.pty_id.is_some() && core.get_pty_session(r.pty_id.as_deref().unwrap()).is_some_and(|i| i["busy"] == json!(true)))), "branch": n.worktree.as_ref().map(|w| w.branch.clone()) })
+                    });
+                    json!({ "id": c.id, "name": c.name, "nodeCount": c.nodes.len(), "pendingApprovals": pending, "updatedAt": updated, "lead": lead })
                 })
                 .collect();
             list.sort_by(|a, b| b["updatedAt"].as_f64().partial_cmp(&a["updatedAt"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
@@ -638,7 +603,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 if st.channels.len() >= MAX_CHANNELS {
                     return Err(err("invalid", "Too many channels"));
                 }
-                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+                let c = Channel { schema_version: 1, id: id.clone(), name: if name.is_empty() { "general".into() } else { name }, nodes: vec![], events: vec![], teams: vec![], tasks: Default::default() };
                 repo.save(&c)?;
                 st.channels.insert(id.clone(), c);
             }
@@ -678,11 +643,14 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
         }
         "node.create" => {
             let agent = s(req, "agent").to_string();
-            let position: Pos = serde_json::from_value(req["position"].clone()).map_err(|_| err("invalid", "position"))?;
-            let size: Size = serde_json::from_value(req["size"].clone()).map_err(|_| err("invalid", "size"))?;
-            if agent.is_empty() || agent.len() > 128 || !pos_ok(position) || !size_ok(size) {
+            if agent.is_empty() || agent.len() > 128 {
                 return Err(err("invalid", "node"));
             }
+            let mode = match s(req, "mode") {
+                "" | "terminal" => None,
+                chat::MODE if chat::protocol(core, &agent).is_some() => Some(chat::MODE.to_string()),
+                _ => return Err(err("invalid", format!("{agent} has no chat mode"))),
+            };
             let in_root = s(req, "workspace") == "root";
             let id = short_id();
             {
@@ -699,7 +667,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                     return Err(err("invalid", "Too many nodes"));
                 }
                 // The record comes first, so a failure below still leaves something to inspect and retry
-                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, position, size });
+                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None });
                 team::sync_group(c);
                 repo.save(c)?;
                 st.rt.insert(key(&ch, &id), NodeRt { status: "creating", ..Default::default() });
@@ -731,26 +699,6 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let out = result.map_err(fail);
             emit(core, &repo, &ch);
             out
-        }
-        "node.layout" => {
-            let position: Pos = serde_json::from_value(req["position"].clone()).map_err(|_| err("invalid", "position"))?;
-            let size: Size = serde_json::from_value(req["size"].clone()).map_err(|_| err("invalid", "size"))?;
-            if !pos_ok(position) || !size_ok(size) {
-                return Err(err("invalid", "layout"));
-            }
-            {
-                let mut st = repo.st.lock().unwrap();
-                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-                let n = c.nodes.iter_mut().find(|n| n.id == nd).ok_or_else(|| err("not-found", "node"))?;
-                if n.position == position && n.size == size {
-                    return Ok(Value::Null);
-                }
-                n.position = position;
-                n.size = size;
-                repo.save(c)?;
-            }
-            emit(core, &repo, &ch);
-            Ok(Value::Null)
         }
         "node.restart" => {
             let node = {
@@ -790,6 +738,9 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                 // Approvals first, so nothing can be answered on a process that is going away
                 expire(st.channels.get_mut(&ch), &nd, rt);
                 rt.status = "closing";
+                if let Some(c) = rt.chat.clone() {
+                    c.kill();
+                }
                 rt.pty_id.clone()
             };
             emit(core, &repo, &ch);
@@ -941,41 +892,6 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             }
             Ok(Value::Null)
         }
-        "handoff.create" => {
-            let (from, to) = (s(req, "from"), s(req, "to"));
-            let node = {
-                let st = repo.st.lock().unwrap();
-                find_node(&st, &ch, to)?;
-                find_node(&st, &ch, from)?
-            };
-            if from == to {
-                return Err(err("invalid", "Same node"));
-            }
-            let text = handoff_text(&repo, &node, s(req, "note"));
-            let edge = Edge { id: short_id(), from: from.into(), to: to.into(), at: now_ms(), text };
-            {
-                let mut st = repo.st.lock().unwrap();
-                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-                if c.edges.len() >= 200 {
-                    return Err(err("invalid", "Too many handoffs"));
-                }
-                c.edges.push(edge.clone());
-                push_event(c, json!({ "t": "handoff", "at": edge.at, "edge": edge.id, "from": edge.from, "to": edge.to, "text": edge.text }));
-                repo.save(c)?;
-            }
-            emit(core, &repo, &ch);
-            Ok(serde_json::to_value(&edge).unwrap())
-        }
-        "edge.remove" => {
-            {
-                let mut st = repo.st.lock().unwrap();
-                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
-                c.edges.retain(|e| e.id != s(req, "edgeId"));
-                repo.save(c)?;
-            }
-            emit(core, &repo, &ch);
-            Ok(Value::Null)
-        }
         "stop" => stop(core, &repo),
         "stop.killAll" if origin == Origin::Desktop => kill_all(core, &repo),
         "stop.clear" if origin == Origin::Desktop => {
@@ -997,6 +913,9 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let list = wt::legacy_inventory(&repo.root, &core.data_dir.join("cowork"), &raw).map_err(git_err)?;
             Ok(serde_json::to_value(list).unwrap())
         }
+        op if op.starts_with("chat.") && op != "chat.send" => chat::dispatch(core, &repo, op, req),
+        "node.takeControl" if origin == Origin::Desktop => chat::take_control(core, &repo, &ch, &nd).map(|_| Value::Null),
+        "node.handBack" if origin == Origin::Desktop => chat::hand_back(core, &repo, &ch, &nd).map(|_| Value::Null),
         op if op.starts_with("team.") || op.starts_with("relay.") || op.starts_with("teammerge.") || op == "chat.send" => team::dispatch(core, &repo, op, req, origin),
         _ => Err(err("invalid", format!("Unknown canvas operation: {}", js_prefix(op, 40)))),
     }
@@ -1009,7 +928,6 @@ fn remove_node(core: &Core, repo: &Arc<Repo>, ch: &str, nd: &str, event: Option<
         let c = st.channels.get_mut(ch).ok_or_else(|| err("not-found", "channel"))?;
         c.nodes.retain(|n| n.id != nd);
         // The handoff text stays in the event history after its edge goes
-        c.edges.retain(|e| e.from != nd && e.to != nd);
         team::forget_node(c, nd);
         if let Some(t) = event {
             push_event(c, json!({ "t": t, "at": now_ms(), "node": nd }));
@@ -1125,6 +1043,9 @@ fn stop(core: &Arc<Core>, repo: &Arc<Repo>) -> R<Value> {
                     // A repeated stop never sends a second Esc: two in a row mean rewind or edit in some CLIs
                     if first && rt.status == "running" {
                         ptys.extend(rt.pty_id.clone());
+                        if let Some(c) = &rt.chat {
+                            c.interrupt();
+                        }
                     }
                 }
             }
@@ -1152,6 +1073,10 @@ fn kill_all(core: &Arc<Core>, repo: &Arc<Repo>) -> R<Value> {
         }
         st.channels.values().flat_map(|c| c.nodes.iter().filter_map(|n| st.rt.get(&key(&c.id, &n.id)).and_then(|r| r.pty_id.clone()).map(|p| (c.id.clone(), n.id.clone(), p)))).collect()
     };
+    let chats: Vec<Arc<crate::agui::session::Chat>> = repo.st.lock().unwrap().rt.values().filter_map(|r| r.chat.clone()).collect();
+    for c in chats {
+        c.kill();
+    }
     for (_, _, pty) in &targets {
         core.kill_pty(pty);
     }
@@ -1304,20 +1229,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn channel_validation_rejects_bad_ids_and_dangling_edges() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+    fn channel_validation_rejects_bad_ids() {
+        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None };
+        let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default() };
         assert!(channel_ok(&c));
-        c.edges.push(Edge { id: "e".into(), from: "a".into(), to: "zz".into(), at: 0.0, text: String::new() });
-        assert!(!channel_ok(&c), "edge to a missing node");
-        c.edges.clear();
         c.nodes.push(n("../x"));
         assert!(!channel_ok(&c), "path in an id");
         c.nodes.pop();
         c.schema_version = 2;
         assert!(!channel_ok(&c), "unknown schema is never loaded, so never overwritten");
         c.schema_version = 1;
-        c.nodes[0].size.width = f64::NAN;
+        c.nodes[0].agent = String::new();
         assert!(!channel_ok(&c));
     }
 

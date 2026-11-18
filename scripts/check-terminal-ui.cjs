@@ -53,26 +53,6 @@ window.makeTerminal = (guarded) => {
 }
 // xterm 5.5 leaves a viewport refresh scheduled across dispose(), which then throws: let the pending frames run first
 window.quietDispose = async s => { await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); s?.dispose() }
-// A canvas node: the same session under CSS scale
-window.makeZoomed = async (scale, compensate) => {
-  await quietDispose(window.zoomed)
-  document.body.innerHTML = '<div style="transform:scale(' + scale + ');transform-origin:0 0;width:300px;height:120px"><div id="zoomed" style="width:300px;height:120px"></div></div>'
-  window.zoomed = createTerminalSession({ zoomCompensation: compensate })
-  zoomed.attach(document.getElementById('zoomed'))
-  zoomed.term.write('abcdefghijklmnopqrstuvwxyz\\r\\nABCDEFGHIJKLMNOPQRSTUVWXYZ')
-  // Painted, as the user sees it before dragging: xterm draws on the next frame
-  return new Promise((done, fail) => {
-    const deadline = Date.now() + 5000
-    const painted = () => document.querySelector('.xterm-rows')?.textContent.includes('XYZ') ? done(true)
-      : Date.now() > deadline ? fail(new Error('terminal never painted')) : requestAnimationFrame(painted)
-    painted()
-  })
-}
-// Where the user sees a cell, a quarter of the way in
-window.cellPoint = (col, row) => {
-  const r = document.querySelector('.xterm-screen').getBoundingClientRect()
-  return { x: r.left + (col + 0.25) * r.width / zoomed.term.cols, y: r.top + (row + 0.5) * r.height / zoomed.term.rows }
-}
 // Session against a scripted PTY: what reaches the screen across sleep and wake, and what is asked of the backend
 window.checkSleepWake = async () => {
   const calls = [], on = {}
@@ -250,27 +230,6 @@ app.whenReady().then(async () => {
     })()`)
     assert.equal(await run('window.desktopNeedsApproval()'), false, 'desktop clears approval when the prompt is erased')
     console.log('desktop rendered-screen approval / ordinary prose / automatic clearing: passed')
-
-    // Canvas zoom: a drag over the cells the user sees selects those cells at every scale.
-    const cdp = await win.webContents.ready
-    const drag = async () => {
-      const [from, to] = await run('[cellPoint(5, 0), cellPoint(10, 1)]')
-      const mouse = (type, p, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', buttons, clickCount: 1 })
-      await mouse('mousePressed', from, 1)
-      await mouse('mouseMoved', { x: (from.x + to.x) / 2, y: to.y }, 1)
-      await mouse('mouseMoved', to, 1)
-      await mouse('mouseReleased', to, 0)
-      return (await run('zoomed.term.getSelection()')).replace(/\r/g, '')
-    }
-    const dragged = 'fghijklmnopqrstuvwxyz\nABCDEFGHIJ'
-    for (const scale of [0.5, 1, 1.5]) {
-      await run(`window.makeZoomed(${scale}, true)`)
-      assert.equal(await drag(), dragged, `selection follows the pointer at scale ${scale}`)
-    }
-    await run('window.makeZoomed(1.5, false)')
-    assert.notEqual(await drag(), dragged, 'without compensation the same drag selects other cells: the check can fail')
-    await run('quietDispose(zoomed)')
-    console.log('zoomed terminal selection at 0.5 / 1 / 1.5: passed')
 
     const slept = await run('window.checkSleepWake()')
     assert.deepEqual(slept.asleep, { data: false, exit: true }, 'sleep drops the screen stream and keeps the exit subscription')

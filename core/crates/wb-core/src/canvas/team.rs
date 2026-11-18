@@ -16,14 +16,6 @@ const PING_PONG: usize = 10;
 /// The notice and the Enter go separately: some TUIs take text plus Enter in one burst as a pasted newline
 const ENTER_DELAY: Duration = Duration::from_millis(800);
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
-pub(super) struct Bounds {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Limits {
@@ -51,7 +43,9 @@ pub(super) struct Team {
     status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     paused_reason: Option<String>,
-    bounds: Bounds,
+    /// Members may message each other directly; otherwise only lead <-> member (cowork-agui-implement.md §8.3)
+    #[serde(default)]
+    members_talk: bool,
     #[serde(default)]
     limits: Limits,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,7 +112,6 @@ pub(super) fn teams_ok(c: &Channel) -> bool {
                 && !t.member_ids.is_empty()
                 && t.member_ids.contains(&t.lead_id)
                 && t.member_ids.iter().all(|m| ids.contains(m.as_str()) && seen.insert(m.clone()))
-                && [t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height].iter().all(|v| v.is_finite() && v.abs() <= 1e6)
                 && t.limits.max_messages >= 1
                 && t.limits.per_member_per10_min >= 1
         })
@@ -131,12 +124,12 @@ fn team_of<'a>(c: &'a Channel, node: &str) -> Option<&'a Team> {
     c.teams.iter().find(|t| t.member_ids.iter().any(|m| m == node))
 }
 
-/// Lead and members talk both ways; two members only over a line the user drew between them
-fn route_ok(t: &Team, edges: &[Edge], from: &str, to: &str) -> bool {
+/// Lead and members talk both ways; two members only when the team allows it
+fn route_ok(t: &Team, from: &str, to: &str) -> bool {
     if from == to || !t.member_ids.iter().any(|m| m == to) || !t.member_ids.iter().any(|m| m == from) {
         return false;
     }
-    from == t.lead_id || to == t.lead_id || edges.iter().any(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
+    from == t.lead_id || to == t.lead_id || t.members_talk
 }
 
 /// Messages written by the app or the user are never held; agents' messages follow the team's relay mode
@@ -219,7 +212,7 @@ pub(super) fn sync_group(c: &mut Channel) -> bool {
                 relay: "approve".into(),
                 status: "running".into(),
                 paused_reason: None,
-                bounds: Bounds { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                members_talk: false,
                 limits: Limits::default(),
                 started_at: Some(now_ms()),
                 message_count: 0,
@@ -485,6 +478,9 @@ pub(super) fn dispatch(core: &Arc<Core>, repo: &Arc<Repo>, op: &str, req: &Value
                 }
                 t.lead_id = s(req, "leadId").into();
             }
+            if let Some(b) = req.get("membersTalk").and_then(Value::as_bool) {
+                t.members_talk = b;
+            }
             if RELAYS.contains(&s(req, "relay")) {
                 t.relay = s(req, "relay").into();
             }
@@ -736,8 +732,8 @@ pub fn mcp_call(core: &Arc<Core>, token: &str, tool: &str, args: &Value) -> Resu
             "send_message" => {
                 let t = team.ok_or_else(|| err("not-allowed", "You are not in a team"))?;
                 let to = a("to");
-                if !route_ok(&t, &c.edges, &me, &to) {
-                    return Err(err("not-allowed", format!("You cannot message {to}: talk to your lead, or ask the user to connect you")));
+                if !route_ok(&t, &me, &to) {
+                    return Err(err("not-allowed", format!("You cannot message {to}: talk to your lead, or ask the user to let members talk")));
                 }
                 let text = a("text");
                 if text.trim().is_empty() {
@@ -883,7 +879,7 @@ mod tests {
             relay: relay.into(),
             status: "running".into(),
             paused_reason: None,
-            bounds: Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            members_talk: false,
             limits: Limits::default(),
             started_at: Some(0.0),
             message_count: 0,
@@ -895,13 +891,13 @@ mod tests {
     }
 
     #[test]
-    fn routes_follow_the_lead_and_drawn_lines() {
-        let t = team("auto");
-        assert!(route_ok(&t, &[], "L", "A") && route_ok(&t, &[], "A", "L"));
-        assert!(!route_ok(&t, &[], "A", "B"), "members need a line");
-        let e = Edge { id: "e".into(), from: "B".into(), to: "A".into(), at: 0.0, text: String::new() };
-        assert!(route_ok(&t, &[e], "A", "B"), "either direction of a drawn line");
-        assert!(!route_ok(&t, &[], "L", "L") && !route_ok(&t, &[], "L", "X") && !route_ok(&t, &[], "X", "L"));
+    fn routes_follow_the_lead_and_the_members_talk_switch() {
+        let mut t = team("auto");
+        assert!(route_ok(&t, "L", "A") && route_ok(&t, "A", "L"));
+        assert!(!route_ok(&t, "A", "B"), "members talk through the lead by default");
+        t.members_talk = true;
+        assert!(route_ok(&t, "A", "B") && route_ok(&t, "B", "A"));
+        assert!(!route_ok(&t, "L", "L") && !route_ok(&t, "L", "X") && !route_ok(&t, "X", "L"));
     }
 
     #[test]
@@ -943,8 +939,8 @@ mod tests {
 
     #[test]
     fn team_shapes_are_validated() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let mut c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A"), n("B")], edges: vec![], events: vec![], teams: vec![team("auto")], tasks: Default::default() };
+        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None };
+        let mut c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A"), n("B")], events: vec![], teams: vec![team("auto")], tasks: Default::default() };
         assert!(teams_ok(&c));
         c.teams[0].lead_id = "Z".into();
         assert!(!teams_ok(&c), "lead must be a member");
@@ -965,8 +961,8 @@ mod tests {
 
     #[test]
     fn the_channel_is_the_group() {
-        let n = |id: &str, agent: &str| Node { id: id.into(), agent: agent.into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let mut c = Channel { schema_version: 1, id: "c".into(), name: "general".into(), nodes: vec![], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+        let n = |id: &str, agent: &str| Node { id: id.into(), agent: agent.into(), worktree: None, mode: None, session: None };
+        let mut c = Channel { schema_version: 1, id: "c".into(), name: "general".into(), nodes: vec![], events: vec![], teams: vec![], tasks: Default::default() };
         assert!(!sync_group(&mut c), "no nodes, no group");
         c.nodes.push(n("S", "cmd"));
         assert!(sync_group(&mut c));
@@ -992,8 +988,8 @@ mod tests {
 
     #[test]
     fn the_brief_tells_each_role_its_tools() {
-        let n = |id: &str| Node { id: id.into(), agent: "codex".into(), worktree: None, position: Pos { x: 0.0, y: 0.0 }, size: Size { width: 640.0, height: 400.0 } };
-        let c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A"), n("B")], edges: vec![], events: vec![], teams: vec![], tasks: Default::default() };
+        let n = |id: &str| Node { id: id.into(), agent: "codex".into(), worktree: None, mode: None, session: None };
+        let c = Channel { schema_version: 1, id: "c".into(), name: "x".into(), nodes: vec![n("L"), n("A"), n("B")], events: vec![], teams: vec![], tasks: Default::default() };
         let lead = brief(&c, &team("auto"), "L");
         assert!(lead.contains("You lead this group") && lead.contains("assign_task") && lead.contains("request_merge") && lead.contains("report"));
         assert!(lead.contains("A (codex)") && lead.contains("B (codex)") && !lead.contains("L (codex)"), "the lead is not its own member");

@@ -3,6 +3,7 @@ import type { RemoteVibeStatus } from '../shared/remoteProtocol'
 import type { CustomAgentConfig, CustomResourceKind } from '../shared/customAgent'
 export type { CustomAgentConfig, CustomResourceKind } from '../shared/customAgent'
 import type { CanvasOp, CanvasOps, CanvasResult, CanvasUpdate } from '../shared/canvas'
+import type { AguiUpdate } from '../shared/agui'
 
 // ── Workbench IPC 契約（唯一整合縫合處）────────────────────────────────
 // 所有 renderer panel 一律透過 window.api.* 呼叫；main 端各 handler 檔各自實作。
@@ -262,6 +263,12 @@ const api = {
       const listener = (_e: unknown, u: CanvasUpdate): void => cb(u)
       ipcRenderer.on('canvas:update', listener)
       return () => ipcRenderer.removeListener('canvas:update', listener)
+    },
+    /** Chat nodes' live events (src/shared/agui.ts) */
+    onAgui: (cb: (u: AguiUpdate) => void): (() => void) => {
+      const listener = (_e: unknown, u: AguiUpdate): void => cb(u)
+      ipcRenderer.on('canvas:agui', listener)
+      return () => ipcRenderer.removeListener('canvas:agui', listener)
     }
   },
   // 視窗管理（獨立彈出終端等）
