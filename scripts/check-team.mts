@@ -39,7 +39,6 @@ const ok = async (op: string, req?: unknown): Promise<any> => {
   return r.data
 }
 const screen = (pty: string): Promise<string> => b.ipc('test:ptyScreen', pty)
-const size = { width: 640, height: 400 }
 let ch = ''
 const view = (): Promise<any> => ok('channel.get', { channelId: ch })
 const rt = async (n: string): Promise<any> => (await view()).runtime[n]
@@ -81,11 +80,11 @@ try {
   await b.ipc('settings:set', { cliPaths: { claude: fakeCmd } })
   ch = (await ok('channel.create', { name: 'squad' })).channel.id
   assert.deepEqual((await view()).teams, [], 'an empty channel has no group yet')
-  const node = async (): Promise<string> => (await ok('node.create', { channelId: ch, agent: 'claude', workspace: 'worktree', position: { x: 0, y: 0 }, size })).id
+  const node = async (): Promise<string> => (await ok('node.create', { channelId: ch, agent: 'claude', workspace: 'worktree' })).id
   const [L, A, B] = [await node(), await node(), await node()]
   for (const n of [L, A, B]) {
     await until(async () => (await rt(n))?.status === 'running', `${n} running`)
-    await until(async () => /FAKE-TEAM ready tools=team_info,read_inbox,send_message,assign_task,report,get_member_changes,request_merge/.test(await screen((await rt(n)).ptyId)), `${n} got all seven tools from wb-hook mcp`)
+    await until(async () => /FAKE-TEAM ready tools=team_info,read_inbox,send_message,assign_task,post_task,claim_task,report,ask_person,get_member_changes,request_merge/.test((await screen((await rt(n)).ptyId)).replace(/\r?\n/g, '')), `${n} got all ten tools from wb-hook mcp`)
   }
   const wt = (n: string) => view().then((v) => v.channel.nodes.find((x: any) => x.id === n).worktree)
   for (const n of [L, A, B]) cwdOf.set(n, (await wt(n)).path)

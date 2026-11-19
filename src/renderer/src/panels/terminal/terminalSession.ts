@@ -15,8 +15,6 @@ const MIN_ROWS = 5
 export interface TerminalSessionOptions {
   theme?: ITheme
   minimumContrastRatio?: number
-  /** 在 CSS transform: scale 底下顯示（畫布）時校正滑鼠座標，見 compensateZoom */
-  zoomCompensation?: boolean
   /** spawn／attach 完成，拿到 pty id */
   onPtyId?: (ptyId: string) => void
   /** 每段輸出（已排進 xterm） */
@@ -136,7 +134,6 @@ export function createTerminalSession(opts: TerminalSessionOptions = {}): Termin
   let held: (() => void)[] | null = null
   /** 訂閱與退訂一次一個、照順序到後端，退訂不會追過還在路上的訂閱 */
   let backend: Promise<unknown> = Promise.resolve()
-  const unzoom = opts.zoomCompensation ? compensateZoom(term) : null
 
   const checkApproval = (): void => {
     if (approvalTimer || !ptyId) return
@@ -376,63 +373,12 @@ export function createTerminalSession(opts: TerminalSessionOptions = {}): Termin
       mute()
       bound.forEach((off) => off())
       clearTimeout(approvalTimer)
-      unzoom?.()
       term.dispose()
     }
   }
 }
 
-const remapped = new WeakSet<Event>()
-
-/**
- * xterm 用未縮放的格寬去換算 getBoundingClientRect 之後的座標，所以在 CSS transform: scale 底下滑鼠選取會選錯字，
- * 偏移隨距離放大。這裡在 capture 階段攔下滑鼠事件，把座標換回未縮放的位置再重發。回傳解除的函式。
- */
-export function compensateZoom(term: Terminal): () => void {
-  let dragging = false
-  const remap = (e: MouseEvent): void => {
-    if (remapped.has(e)) return
-    const target = e.target instanceof Node ? e.target : null
-    const inside = !!target && !!term.element?.contains(target)
-    // xterm 拖曳時改聽 document：從這個終端開始的拖曳，滑出去之後也要照同一個終端換算
-    if (e.type === 'mousedown') dragging = inside
-    if (!inside && !dragging) return
-    if (e.type === 'mouseup') dragging = false
-    const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
-    if (!screen || !target) return
-    const r = screen.getBoundingClientRect()
-    const s = r.width / screen.offsetWidth
-    if (!Number.isFinite(s) || s <= 0 || Math.abs(s - 1) < 1e-3) return
-    e.stopImmediatePropagation()
-    // xterm 自己也會擋 mousedown 的預設行為；原事件被攔下後由這裡代勞
-    if (e.type === 'mousedown') e.preventDefault()
-    const copy = new MouseEvent(e.type, {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window,
-      detail: e.detail,
-      screenX: e.screenX,
-      screenY: e.screenY,
-      clientX: r.left + (e.clientX - r.left) / s,
-      clientY: r.top + (e.clientY - r.top) / s,
-      ctrlKey: e.ctrlKey,
-      shiftKey: e.shiftKey,
-      altKey: e.altKey,
-      metaKey: e.metaKey,
-      button: e.button,
-      buttons: e.buttons,
-      relatedTarget: e.relatedTarget
-    })
-    remapped.add(copy)
-    target.dispatchEvent(copy)
-  }
-  const types = ['mousedown', 'mousemove', 'mouseup'] as const
-  types.forEach((t) => window.addEventListener(t, remap, true))
-  return () => types.forEach((t) => window.removeEventListener(t, remap, true))
-}
-
-/** xterm colors for each app theme; the terminal panel and canvas nodes share them */
+/** xterm colors for each app theme; the terminal panel and Cowork share them */
 export function xtermTheme(theme: string): ITheme {
   switch (theme) {
     case 'light-morandi':

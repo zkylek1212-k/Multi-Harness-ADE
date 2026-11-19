@@ -1,6 +1,6 @@
 // node --experimental-strip-types scripts/check-canvas.mts
 // Cowork 2.0 canvas through the real backend (wb-ipc) on a temporary repo: node lifecycle, worktree data protection,
-// screen and hook approvals (one-shot, generation-bound), handoff drafts, safe paste, stop, persistence and damaged files.
+// screen and hook approvals (one-shot, generation-bound), safe paste, stop, persistence and damaged files.
 // Needs: cargo build -p wb-ipc -p wb-hook (wb-hook.exe must sit next to wb-ipc.exe). No real AI CLI is started.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -40,8 +40,6 @@ const ok = async (op: string, req?: unknown): Promise<any> => {
 }
 const code = async (op: string, req?: unknown): Promise<string | undefined> => (await c(op, req)).code
 const screen = (pty: string): Promise<string> => b.ipc('test:ptyScreen', pty)
-const size = { width: 640, height: 400 }
-const pos = { x: 0, y: 0 }
 
 let ch = ''
 const view = (): Promise<any> => ok('channel.get', { channelId: ch })
@@ -68,7 +66,7 @@ try {
   assert.equal((await ok('channels.list')).length, 1)
 
   // ── worktree node: create, work, protected while running ──
-  const n1 = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree', position: pos, size })).id
+  const n1 = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree' })).id
   let r1 = await running(n1)
   const node1 = (await view()).channel.nodes.find((n: any) => n.id === n1)
   assert.equal(node1.worktree.branch, `cowork/${ch}/${n1}`)
@@ -112,10 +110,10 @@ try {
   assert.ok(!(await view()).channel.nodes.some((n: any) => n.id === n1))
 
   // ── root node: one per repo, never deleted ──
-  const root = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'root', position: pos, size })).id
+  const root = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'root' })).id
   await running(root)
   const ch2 = (await ok('channel.create', { name: 'other' })).channel.id
-  assert.equal(await code('node.create', { channelId: ch2, agent: 'shell', workspace: 'root', position: pos, size }), 'root-node-exists')
+  assert.equal(await code('node.create', { channelId: ch2, agent: 'shell', workspace: 'root' }), 'root-node-exists')
   assert.equal(await code('node.discardPreview', { channelId: ch, nodeId: root }), 'busy')
   await ok('node.close', { channelId: ch, nodeId: root })
   await waitRt(root, (r) => r.status === 'exited', 'root node ended')
@@ -125,7 +123,7 @@ try {
   await ok('channel.delete', { channelId: ch2 })
 
   // ── discard lists untracked and ignored data, and re-checks before deleting ──
-  const n2 = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree', position: pos, size })).id
+  const n2 = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree' })).id
   const r2 = await running(n2)
   const wt2 = (await view()).channel.nodes.find((n: any) => n.id === n2).worktree.path
   await waitScreen(r2.ptyId, />\s*$/, 'cmd prompt')
@@ -145,21 +143,16 @@ try {
   await ok('node.discard', { channelId: ch, nodeId: n2, token: dp.token })
   assert.ok(!fs.existsSync(wt2))
 
-  // ── handoff: a draft from git, never written to the target ──
-  const a = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree', position: pos, size })).id
-  const bNode = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree', position: { x: 700, y: 0 }, size })).id
+  // ── two worktree nodes for the stop and persistence checks ──
+  const a = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree' })).id
+  const bNode = (await ok('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree' })).id
   await running(a)
   const rb = await running(bNode)
-  const edge = await ok('handoff.create', { channelId: ch, from: a, to: bNode, note: 'note-xyz\x1b[31m' })
-  assert.match(edge.text, new RegExp(`cowork/${ch}/${a}`))
-  assert.match(edge.text, /note-xyz\[31m/, 'control characters are stripped from the draft')
-  assert.ok(!(await screen(rb.ptyId)).includes('note-xyz'), 'nothing reaches the target terminal')
-  assert.ok((await view()).channel.events.some((e: any) => e.t === 'handoff' && e.edge === edge.id))
 
   // ── stop: one Esc each, new work refused, stage 2 ends processes, clear ──
   const ra = await rt(a)
   assert.equal((await ok('stop')).requested, true)
-  assert.equal(await code('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree', position: pos, size }), 'stopped')
+  assert.equal(await code('node.create', { channelId: ch, agent: 'shell', workspace: 'worktree' }), 'stopped')
   assert.equal(await code('node.message', { channelId: ch, nodeId: a, sessionGeneration: ra.sessionGeneration, text: 'x' }), 'stopped')
   assert.deepEqual((await ok('stop.killAll')).failed, [])
   await waitRt(a, (r) => r.status === 'pending-cleanup', 'killed node ended')
@@ -168,7 +161,7 @@ try {
 
   // ── screen approval and hook approval through the fake Claude ──
   await b.ipc('settings:set', { cliPaths: { claude: fakeCmd } })
-  const cl = (await ok('node.create', { channelId: ch, agent: 'claude', workspace: 'worktree', position: pos, size })).id
+  const cl = (await ok('node.create', { channelId: ch, agent: 'claude', workspace: 'worktree' })).id
   let rc = await running(cl)
   await waitScreen(rc.ptyId, /FAKE-CLI ready hook=yes pipe=yes/, 'hook mounted for this session')
   await type(rc.ptyId, 'ask\r')
@@ -213,15 +206,13 @@ try {
   const s = await waitScreen(rc.ptyId, /line2/, 'pasted')
   assert.ok(!s.includes('echo:line1'), 'a pasted newline is not Enter')
 
-  // ── persistence: positions and edges come back; no process is treated as alive ──
-  await ok('node.layout', { channelId: ch, nodeId: a, position: { x: 123, y: 45 }, size: { width: 700, height: 420 } })
+  // ── persistence: nodes come back; no process is treated as alive ──
   b.stop()
   b = new Backend({ WB_DATA_DIR: data })
   await b.ipc('test:openWindow', repo)
   const v = await view()
   const na = v.channel.nodes.find((n: any) => n.id === a)
-  assert.deepEqual([na.position, na.size], [{ x: 123, y: 45 }, { width: 700, height: 420 }])
-  assert.ok(v.channel.edges.some((e: any) => e.id === edge.id))
+  assert.ok(na && na.worktree)
   assert.ok(Object.values(v.runtime).every((r: any) => r.status !== 'running' && !r.ptyId), 'restart shows nodes as ended')
   assert.ok(Object.values(v.runtime).every((r: any) => !r.approval), 'pending requests do not survive a restart')
 
@@ -238,7 +229,7 @@ try {
   assert.match(fs.readFileSync(path.join(dir, 'future.json'), 'utf8'), /"schemaVersion":2/)
   assert.equal(await code('channel.get', { channelId: '../x' }), 'not-found')
 
-  console.log('canvas: lifecycle, worktree protection, approvals (screen and hook), handoff, paste, stop, persistence ok')
+  console.log('canvas: lifecycle, worktree protection, approvals (screen and hook), paste, stop, persistence ok')
 } finally {
   b.stop()
   await new Promise((r) => setTimeout(r, 500))

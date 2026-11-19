@@ -3,6 +3,7 @@ import type { RemoteVibeStatus } from '../shared/remoteProtocol'
 import type { CustomAgentConfig, CustomResourceKind } from '../shared/customAgent'
 export type { CustomAgentConfig, CustomResourceKind } from '../shared/customAgent'
 import type { CanvasOp, CanvasOps, CanvasResult, CanvasUpdate } from '../shared/canvas'
+import type { AguiUpdate } from '../shared/agui'
 
 // ── Workbench IPC 契約（唯一整合縫合處）────────────────────────────────
 // 所有 renderer panel 一律透過 window.api.* 呼叫；main 端各 handler 檔各自實作。
@@ -76,6 +77,9 @@ const api = {
   // 設定管理（CLI 路徑等）—— main/ipc/settings.ts
   settings: {
     proxyPassword: (password: string): Promise<void> => ipcRenderer.invoke('settings:proxyPassword', password),
+    /** The Bearer key of the custom agent's AG-UI endpoint; '' clears it. Stored encrypted, never read back. */
+    customAgentKey: (key: string): Promise<void> => ipcRenderer.invoke('settings:customAgentKey', key),
+    customAgentKeySet: (): Promise<boolean> => ipcRenderer.invoke('settings:customAgentKeySet'),
     proxyStatus: (): Promise<ProxyStatus> => ipcRenderer.invoke('settings:proxyStatus'),
     testProxy: (url: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('settings:testProxy', url),
     get: (): Promise<WorkbenchSettings> => ipcRenderer.invoke('settings:get'),
@@ -262,6 +266,18 @@ const api = {
       const listener = (_e: unknown, u: CanvasUpdate): void => cb(u)
       ipcRenderer.on('canvas:update', listener)
       return () => ipcRenderer.removeListener('canvas:update', listener)
+    },
+    /** Chat nodes' live events (src/shared/agui.ts) */
+    /** A routine changed (saved, ran, finished); read routine.list again */
+    onRoutines: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('canvas:routines', listener)
+      return () => ipcRenderer.removeListener('canvas:routines', listener)
+    },
+    onAgui: (cb: (u: AguiUpdate) => void): (() => void) => {
+      const listener = (_e: unknown, u: AguiUpdate): void => cb(u)
+      ipcRenderer.on('canvas:agui', listener)
+      return () => ipcRenderer.removeListener('canvas:agui', listener)
     }
   },
   // 視窗管理（獨立彈出終端等）

@@ -1,6 +1,8 @@
 // Cowork 2.0 canvas: the contract between wb-core (canvas.rs) and the UI. Spec: cowork2.0-implement.md §3.
 // Persisted shapes first, then runtime state that the backend owns and never writes to disk, then the IPC ops.
 
+import type { Transcript } from './agui'
+
 export type CanvasResult<T> = { ok: true; data: T } | { ok: false; code: string; message?: string; data?: unknown }
 
 // ---------- persisted: <git common dir>/cowork/channels/<channelId>.json ----------
@@ -10,13 +12,75 @@ export interface Channel {
   id: string
   name: string
   nodes: CanvasNode[]
-  edges: HandoffEdge[]
   /** Newest last, truncated by the backend; Feed and phone read this */
   events: ChannelEvent[]
   /** The channel's group: at most one entry, kept by the backend (id "main"). A channel is a group of agents. */
   teams?: Team[]
   /** What each node works on, keyed by node id; set by assign_task, report or the user */
   tasks?: Record<string, NodeTask>
+  /** Tasks the lead posted for any member to claim (cowork-agui-implement.md §6.8) */
+  board?: BoardTask[]
+}
+
+export interface BoardTask {
+  id: string
+  title: string
+  details: string
+  doneWhen: string
+  /** returned: nobody claimed it in 5 minutes; the lead decides */
+  status: 'open' | 'claimed' | 'returned'
+  claimedBy?: string
+  at: number
+}
+
+/** cowork-agui-implement.md §11: daily/weekly at a local HH:MM (day 0 = Monday), every N minutes (15 or more), or new commits on a branch */
+export type RoutineSchedule = { kind: 'daily'; time: string } | { kind: 'weekly'; day: number; time: string } | { kind: 'every'; minutes: number } | { kind: 'commit'; branch: string }
+
+export interface Routine {
+  /** '' when new; the backend assigns it */
+  id: string
+  name: string
+  /** The first message of each run's conversation */
+  prompt: string
+  agent: string
+  /** Set by the backend: the repository the routine was made in */
+  repo: string
+  /** report: read-only, the finding goes to Needs you; change: may change code in its own worktree */
+  scope: 'report' | 'change'
+  schedule: RoutineSchedule
+  model?: string
+  effort?: string
+  enabled: boolean
+  nextAt: number
+  nextAtText?: string
+  failures: number
+  lastRun?: { channel: string; at: number; status: 'running' | 'ok' | 'failed' | 'stopped'; summary?: string; seen: boolean }
+}
+
+/** A colleague invited into one channel (§13) */
+export interface GuestInfo {
+  id: string
+  name: string
+  createdAt: number
+  lastSeenAt: number
+  online: boolean
+}
+
+export interface GuestInvite {
+  /** One use, expires after 7 days */
+  url: string
+  expiresAt: number
+  /** Where a colleague's browser gets this computer's certificate, so it stops warning */
+  caUrl?: string
+}
+
+/** An ask_person question waiting for the user (§6.4) */
+export interface PersonAsk {
+  id: string
+  node: string
+  question: string
+  choices: string[]
+  at: number
 }
 
 export type RelayMode = 'approve' | 'lead-auto' | 'auto'
@@ -38,7 +102,10 @@ export interface Team {
   status: 'running' | 'paused'
   /** Why it stopped running: the user, the stop, or a cap (only in lead-auto and auto) */
   pausedReason?: string
-  bounds: { x: number; y: number; width: number; height: number }
+  /** Members may message each other directly (cowork-agui-implement.md §8.3) */
+  membersTalk?: boolean
+  /** The user's messages without an @ go to every Bot; each answers PASS when it is not for its role (§6.8) */
+  freeTalk?: boolean
   limits: { maxMessages: number; perMemberPer10Min: number }
   startedAt?: number
   messageCount: number
@@ -51,6 +118,8 @@ export interface NodeTask {
   updatedAt: number
   /** Who gave the task: the lead (reports go back to the lead) or the user (reports go to the chat) */
   source: 'assign' | 'user'
+  /** A member's suggestion for the shared memory; the lead writes it (§12.1) */
+  memory?: string
 }
 
 export interface TeamMessage {
@@ -60,11 +129,14 @@ export interface TeamMessage {
   from: string
   /** A node id, or 'user' for an agent's report into the chat */
   to: string
-  kind: 'task' | 'message' | 'report' | 'system'
+  /** free: the user's message to every Bot in free talk */
+  kind: 'task' | 'message' | 'report' | 'system' | 'free'
   /** Untrusted when from an agent; never shown as HTML */
   text: string
   at: number
   state: 'pending-approval' | 'queued' | 'notified' | 'read' | 'rejected'
+  /** One free-talk message to several Bots shares this id */
+  group?: string
 }
 
 /** A lead's request to merge a member's branch into its own worktree, waiting for the user */
@@ -84,17 +156,24 @@ export interface CanvasNode {
   agent: string
   /** Absent = works in the repo root (one per repo, enforced by the backend) */
   worktree?: { path: string; branch: string; baseCommit: string }
-  position: { x: number; y: number }
-  size: { width: number; height: number }
+  /** Absent = terminal */
+  mode?: NodeMode
+  /** The CLI's own session id (chat nodes), for resume */
+  session?: string
+  /** What this Bot does in the group; claiming and PASS go by it */
+  role?: string
+  /** A report-only routine's Bot: the CLI's read-only mode */
+  readOnly?: boolean
+  /** Unset = the CLI's own default (P7) */
+  model?: string
+  effort?: string
 }
 
-export interface HandoffEdge {
-  id: string
-  from: string
-  to: string
-  at: number
-  /** The draft built at the time; not proof it was pasted or received */
-  text: string
+/** What a Bot can run with (agent.models): suggestions, any name the CLI knows also works */
+export interface AgentModels {
+  models: { id: string; name: string; efforts?: string[] }[]
+  /** Empty: the model id carries the effort (agy) */
+  efforts: string[]
 }
 
 export type ChannelEvent =
@@ -110,6 +189,8 @@ export type ChannelEvent =
   | { t: 'relay'; at: number; id: string; decision: 'approved' | 'rejected'; via?: 'phone' }
   | { t: 'task'; at: number; node: string; status: NodeTask['status']; team?: string }
   | { t: 'team-merge'; at: number; team: string; member: string; decision: 'requested' | 'approved' | 'rejected' | 'auto'; id?: string }
+  | { t: 'board'; at: number; id: string; status: 'open' | 'claimed'; node?: string }
+  | { t: 'ask'; at: number; node: string; id: string }
 
 // ---------- runtime (backend-owned, not persisted) ----------
 
@@ -132,6 +213,8 @@ export interface NodeRuntime {
   approval: ApprovalRequest | null
   /** Proxy mode the session started with; differs from settings => UI says restart needed */
   proxyMode?: 'inherit' | 'custom' | 'direct'
+  /** A chat node is in the middle of a turn */
+  inRun?: boolean
 }
 
 export interface ApprovalFile {
@@ -177,6 +260,8 @@ export interface ChannelView {
   mergeRequests: TeamMergeRequest[]
   /** The channel's latest team messages, newest first, at most 100 */
   messages: TeamMessage[]
+  /** ask_person questions of running sessions */
+  asks?: PersonAsk[]
 }
 
 export interface NodeTeamRuntime {
@@ -193,7 +278,12 @@ export interface ChannelSummary {
   nodeCount: number
   pendingApprovals: number
   updatedAt: number
+  /** The conversation's own agent: its first node */
+  lead: { nodeId: string; agent: string; mode: NodeMode; status: NodeStatus; inRun: boolean; branch?: string } | null
 }
+
+/** chat: headless CLI behind AG-UI (cowork-agui-implement.md); terminal: the CLI's own TUI in a PTY */
+export type NodeMode = 'chat' | 'terminal'
 
 // ---------- worktree operations (§3.3) ----------
 
@@ -257,9 +347,11 @@ export interface CanvasOps {
   'channel.rename': { req: { channelId: string; name: string }; res: void }
   /** Refused while any node still has a process or a worktree */
   'channel.delete': { req: { channelId: string }; res: void }
-  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; position: CanvasNode['position']; size: CanvasNode['size'] }; res: CanvasNode }
-  /** Layout only; size change also resizes the PTY once (resize_ordered) */
-  'node.layout': { req: { channelId: string; nodeId: string; position: CanvasNode['position']; size: CanvasNode['size'] }; res: void }
+  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode; role?: string; model?: string; effort?: string }; res: CanvasNode }
+  'agent.models': { req: { agent: string }; res: AgentModels }
+  /** A chat Bot restarts on the same session with it (between turns); a terminal one takes it at its next restart */
+  'node.model': { req: { channelId: string; nodeId: string; model: string; effort: string }; res: { restarted: boolean } }
+  'node.role': { req: { channelId: string; nodeId: string; role: string }; res: void }
   'node.restart': { req: { channelId: string; nodeId: string }; res: void }
   /** Invalidates approvals, kills the PTY and waits for exit; keeps the worktree (pending-cleanup) */
   'node.close': { req: { channelId: string; nodeId: string }; res: void }
@@ -276,8 +368,6 @@ export interface CanvasOps {
   /** Bracketed paste without Enter; refused unless running, inputReady, no pending approval, not stopped */
   'node.message': { req: { channelId: string; nodeId: string; sessionGeneration: string; text: string }; res: void }
   /** Builds the draft from git (branch, commits, files, uncommitted state) + note; never writes to a PTY */
-  'handoff.create': { req: { channelId: string; from: string; to: string; note: string }; res: HandoffEdge }
-  'edge.remove': { req: { channelId: string; edgeId: string }; res: void }
   /** Stage 1 for every Cowork node of this repo, all channels and windows: one Esc each */
   'stop': { req: void; res: StopState }
   /** Stage 2, only while stopped: kill_pty and confirm exit */
@@ -287,10 +377,32 @@ export interface CanvasOps {
   /** The last lines on a node's screen, for the Take Over panel */
   'node.screen': { req: { channelId: string; nodeId: string }; res: string }
   // ---------- groups (cowork-team-implement.md): the channel is the group ----------
-  /** The user's own message: typed into the agent's terminal and sent. `to` defaults to the lead. Resumes a paused group. */
+  /** The user's own message: a chat node's next turn, or typed into a terminal and sent. `to` defaults to the lead (every Bot in
+   *  free talk). Resumes a paused group. */
   'chat.send': { req: { channelId: string; to?: string; text: string }; res: void }
+  'node.takeControl': { req: { channelId: string; nodeId: string }; res: void }
+  'node.handBack': { req: { channelId: string; nodeId: string }; res: void }
+  'chat.prompt': { req: { channelId: string; nodeId: string; text: string }; res: void }
+  'chat.interrupt': { req: { channelId: string; nodeId: string }; res: void }
+  'chat.answer': { req: { channelId: string; nodeId: string; approvalId: string; allow: boolean; forSession?: boolean }; res: void }
+  /** Without nodeId: every chat node's, keyed by node id */
+  'chat.transcript': { req: { channelId: string; nodeId?: string }; res: Transcript }
+  /** Desktop only; needs Remote control on: colleagues connect through it */
+  'guest.invite': { req: { channelId: string }; res: GuestInvite }
+  'guest.list': { req: { channelId: string }; res: GuestInfo[] }
+  /** Ends their access at once and closes their connections */
+  'guest.revoke': { req: { channelId: string; guestId: string }; res: boolean }
+  'routine.list': { req: void; res: Routine[] }
+  /** Creates (id '') or updates; refused over 20 enabled or under 15 minutes */
+  'routine.save': { req: { routine: Routine }; res: Routine }
+  'routine.delete': { req: { id: string }; res: void }
+  'routine.runNow': { req: { id: string }; res: void }
+  /** The finding was seen: off Needs you */
+  'routine.dismiss': { req: { id: string }; res: void }
+  /** The answer goes back to the Bot as the user's next message */
+  'ask.answer': { req: { channelId: string; askId: string; text: string }; res: void }
   /** Who leads, how agent messages are relayed, and the caps */
-  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits'] }; res: void }
+  'team.update': { req: { channelId: string; leadId?: string; relay?: RelayMode; limits?: Team['limits']; membersTalk?: boolean; freeTalk?: boolean }; res: void }
   'team.resume': { req: { channelId: string }; res: void }
   'team.pause': { req: { channelId: string }; res: void }
   /** Newest first, at most 200 */

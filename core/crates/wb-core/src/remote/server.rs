@@ -58,8 +58,11 @@ const PAIR_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // without 0/O 
 const PUSH_SUBJECT: &str = "https://github.com/zkylek1212-k/Multi-Harness-ADE";
 const MAX_BACKLOG: usize = 8 * 1024 * 1024;
 /// Cowork 2.0 on the phone (cowork2.0-implement.md §3.9): read, answer approvals, send a message, stage-1 stop. Everything else is desktop-only.
-pub const PHONE_CANVAS_OPS: [&str; 9] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
-pub const PHONE_AUDITED_OPS: [&str; 7] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause"];
+pub const PHONE_CANVAS_OPS: [&str; 13] = ["channels.list", "channel.get", "node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause", "chat.transcript", "chat.send", "chat.answer", "ask.answer"];
+/// What a colleague invited into one channel may do there (cowork-agui-implement.md §13.3): read it, talk, approve,
+/// stop the current turn, see the changes. Nothing else, and only in that channel.
+pub const GUEST_OPS: [&str; 9] = ["channel.get", "chat.transcript", "chat.send", "chat.answer", "chat.interrupt", "node.approve", "node.reject", "node.message", "node.changes"];
+pub const PHONE_AUDITED_OPS: [&str; 10] = ["node.approve", "node.reject", "node.message", "stop", "relay.approve", "relay.reject", "team.pause", "chat.send", "chat.answer", "ask.answer"];
 const BUILTIN: [(&str, &str, &str); 5] = [("claude", "Claude Code", "agent"), ("codex", "Codex", "agent"), ("antigravity", "Antigravity", "agent"), ("powershell", "PowerShell", "shell"), ("cmd", "Command Prompt", "shell")];
 
 // A preview iframe is on another port, maybe another computer, so frame-src cannot be just 'self'. A framed page reaches nothing here.
@@ -136,6 +139,8 @@ struct Client {
     tx: mpsc::UnboundedSender<Out>,
     backlog: AtomicUsize,
     device: Mutex<Option<Value>>,
+    /// A colleague's browser (§13): never `authed()`, so nothing meant for paired devices reaches it
+    guest: Mutex<Option<Value>>,
     attached: Mutex<HashSet<String>>,
     visible: AtomicBool,
     /// The address the phone reached us on: a preview URL has to use the same one, not a guess between adapters
@@ -151,6 +156,10 @@ impl Client {
 
     fn authed(&self) -> bool {
         self.device.lock().unwrap().is_some()
+    }
+
+    fn guest(&self) -> Option<Value> {
+        self.guest.lock().unwrap().clone()
     }
 
     fn send(self: &Arc<Self>, msg: &Value) {
@@ -817,7 +826,7 @@ impl Bridge {
         let ws = WebSocketStream::from_raw_socket(io, Role::Server, Some(cfg)).await;
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let client = Arc::new(Client { conn_id: uuid(), tx, backlog: AtomicUsize::new(0), device: Mutex::new(None), attached: Mutex::default(), visible: AtomicBool::new(true), host, kill: Notify::new(), handle: Handle::current() });
+        let client = Arc::new(Client { conn_id: uuid(), tx, backlog: AtomicUsize::new(0), device: Mutex::new(None), guest: Mutex::new(None), attached: Mutex::default(), visible: AtomicBool::new(true), host, kill: Notify::new(), handle: Handle::current() });
         self.clients.lock().unwrap().insert(client.conn_id.clone(), client.clone());
 
         let writer = {
@@ -845,7 +854,7 @@ impl Bridge {
                 // No valid token within five seconds, no connection
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
                 loop {
-                    let next = if client.authed() {
+                    let next = if client.authed() || client.guest().is_some() {
                         stream.next().await
                     } else {
                         match tokio::time::timeout_at(deadline, stream.next()).await {
@@ -895,6 +904,20 @@ impl Bridge {
     }
 
     async fn on_message(self: Arc<Self>, c: Arc<Client>, msg: Value) {
+        if let Some(g) = c.guest() {
+            match sv(&msg, "t") {
+                "ping" => c.send(&json!({ "t": "pong" })),
+                "visibility" => c.visible.store(msg.get("visible").is_some_and(crate::settings::truthy), Ordering::SeqCst),
+                "canvas" => {
+                    let me = self.clone();
+                    tokio::spawn(async move {
+                        let _ = Self::blocking(move || me.guest_canvas(&c, &g, &msg)).await;
+                    });
+                }
+                _ => c.send(&json!({ "t": "error", "message": "not allowed" })),
+            }
+            return;
+        }
         if !c.authed() {
             let me = self.clone();
             let client = c.clone();
@@ -961,8 +984,70 @@ impl Bridge {
                 }
                 self.notify_status();
             }
+            // A colleague's invite link (§13.2): the one-time code becomes a token for that channel only
+            "guestJoin" => {
+                let Some((guest, token)) = store.redeem_invite(sv(msg, "code"), sv(msg, "name")) else {
+                    store.audit("guest.join.fail", json!({}));
+                    return c.send(&json!({ "t": "error", "message": "invalid or expired invite" }));
+                };
+                store.audit("guest.join", json!({ "guestId": guest["id"], "channelId": guest["channel"] }));
+                c.send(&json!({ "t": "guestJoined", "token": token }));
+                self.guest_in(c, guest, &host_name);
+            }
+            "guestAuth" => {
+                let Some(guest) = store.find_guest_by_token(sv(msg, "token")) else { return c.drop_with(4001) };
+                store.touch_guest(sv(&guest, "id"));
+                store.audit("guest.connect", json!({ "guestId": guest["id"] }));
+                self.guest_in(c, guest, &host_name);
+            }
             _ => c.drop_with(4001),
         }
+    }
+
+    fn guest_in(&self, c: &Arc<Client>, guest: Value, host_name: &str) {
+        let shown = json!({ "id": guest["id"], "name": guest["name"], "channelId": guest["channel"] });
+        *c.guest.lock().unwrap() = Some(guest);
+        c.send(&json!({ "t": "authed", "guest": shown, "hostName": host_name }));
+    }
+
+    /// Every op a colleague sends: on the list, in their channel, with their name on what they say and approve
+    fn guest_canvas(&self, c: &Arc<Client>, g: &Value, msg: &Value) {
+        let (Some(core), Some(store)) = (self.core(), self.store()) else { return };
+        let op = sv(msg, "op").to_string();
+        let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
+        let mut req = msg.get("req").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        let mine = sv(&req, "channelId") == sv(g, "channel");
+        let result = if !GUEST_OPS.contains(&op.as_str()) || !mine {
+            json!({ "ok": false, "code": "not-allowed" })
+        } else {
+            req["_guest"] = json!(sv(g, "name"));
+            // "Allow for this session" is not for colleagues: one approval at a time (§13.4)
+            req["forSession"] = json!(false);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::canvas::guest_call(&core, sv(g, "repo"), &op, &req))).unwrap_or_else(|_| json!({ "ok": false, "code": "internal" }))
+        };
+        if op != "channel.get" && op != "chat.transcript" && op != "node.changes" || !mine {
+            let mut row = canvas_audit(&op, &req, &result, None);
+            row["guestId"] = g["id"].clone();
+            store.audit(&format!("guest.{}", js_prefix(&op, 40)), row);
+        }
+        c.send(&json!({ "t": "canvas", "reqId": req_id, "result": result }));
+    }
+
+    /// Revoking ends the colleague's access at once: the token is gone and open connections are closed
+    pub fn revoke_guest(&self, id: &str) -> bool {
+        let Some(store) = self.store() else { return false };
+        let gone = store.remove_guest(id);
+        for c in self.clients.lock().unwrap().values() {
+            if c.guest().is_some_and(|g| sv(&g, "id") == id) {
+                c.drop_with(4001);
+            }
+        }
+        store.audit("guest.revoke", json!({ "guestId": id }));
+        gone
+    }
+
+    pub fn guest_online(&self, id: &str) -> bool {
+        self.clients.lock().unwrap().values().any(|c| c.guest().is_some_and(|g| sv(&g, "id") == id))
     }
 
     fn broadcast(&self, msg: &Value, filter: impl Fn(&Arc<Client>) -> bool) {
@@ -1271,13 +1356,28 @@ impl Bridge {
         self.push(id, "approval", json!({ "title": format!("⏳ {title} 等待你的回覆"), "body": body, "tag": format!("approval-{id}"), "url": format!("/#s={id}") }));
     }
 
+    /// A chat Bot waits for the user (cowork-agui-implement.md §7.1): the push says who and what kind, never the
+    /// command, the diff or the message
+    pub fn push_waiting(&self, id: &str, who: &str, what: &str) {
+        let who = js_prefix(who, 60);
+        self.push(id, "approval", json!({ "title": format!("⏳ {who} 等待你的回覆"), "body": what, "tag": format!("chat-{id}"), "url": "/" }));
+    }
+
     /// A canvas change, stripped of file contents (§3.9: the phone gets file names and line counts, never code)
     pub fn on_canvas(&self, update: &Value) {
         if self.clients.lock().unwrap().is_empty() {
             return;
         }
         let u = crate::canvas::for_phone(json!({ "ok": true, "data": update }))["data"].take();
-        self.broadcast(&json!({ "t": "canvasUpdate", "update": u }), |c| c.visible.load(Ordering::SeqCst));
+        let msg = json!({ "t": "canvasUpdate", "update": u });
+        self.broadcast(&msg, |c| c.visible.load(Ordering::SeqCst));
+        // Colleagues hear about their own channel only
+        let ch = sv(update, "channelId");
+        for c in self.clients.lock().unwrap().values() {
+            if c.guest().is_some_and(|g| sv(&g, "channel") == ch) {
+                c.send(&msg);
+            }
+        }
     }
 
     pub fn report_vibe_status(&self, window: u32, status: &Value) {
@@ -1327,7 +1427,7 @@ fn canvas_audit(op: &str, req: &Value, result: &Value, device_id: Option<&str>) 
     let mut row = json!({
         "deviceId": device_id, "op": js_prefix(op, 40), "channelId": id("channelId"), "nodeId": id("nodeId"),
         "requestId": id("requestId"), "sessionGeneration": id("sessionGeneration"), "textLength": len("text"), "reasonLength": len("reason"), "ok": result["ok"],
-        "messageId": id("messageId"), "teamId": id("teamId"),
+        "messageId": id("messageId"), "teamId": id("teamId"), "approvalId": id("approvalId"), "askId": id("askId"), "to": id("to"),
     });
     if result["ok"] != json!(true) {
         row["code"] = result["code"].clone();

@@ -59,6 +59,35 @@ export function pairOverWs(base: string, code: string, name: string, timeoutMs =
   })
 }
 
+/** A colleague's invite: the one-time code for a token that opens one channel (§13.2) */
+export function joinOverWs(base: string, code: string, name: string, timeoutMs = 12_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl(base))
+    const timer = window.setTimeout(() => done(new Error('timeout')), timeoutMs)
+    function done(err: Error | null, token?: string): void {
+      window.clearTimeout(timer)
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      ws.close()
+      if (err) reject(err)
+      else resolve(token!)
+    }
+    ws.onopen = () => ws.send(JSON.stringify({ t: 'guestJoin', code, name }))
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data as string) as ServerMessage
+        if (m.t === 'guestJoined') return done(null, m.token)
+        if (m.t === 'error') return done(new Error('invalid'))
+      } catch {
+        // 不是我們認得的訊息就繼續等
+      }
+    }
+    ws.onerror = () => done(new Error('unreachable'))
+    ws.onclose = () => done(new Error('unreachable'))
+  })
+}
+
 export class RemoteConnection {
   private ws: WebSocket | null = null
   private retry = 0
@@ -72,7 +101,9 @@ export class RemoteConnection {
   /** base：要連的那台電腦，`https://host:port/`（可以不是這個頁面的 origin） */
   constructor(
     private base: string,
-    private token: string
+    private token: string,
+    /** guest: a colleague's token for one channel */
+    private kind: 'device' | 'guest' = 'device'
   ) {}
 
   start(): void {
@@ -143,7 +174,7 @@ export class RemoteConnection {
     this.ws = ws
     ws.onopen = () => {
       this.retry = 0
-      ws.send(JSON.stringify({ t: 'auth', token: this.token }))
+      ws.send(JSON.stringify({ t: this.kind === 'guest' ? 'guestAuth' : 'auth', token: this.token }))
       // 25 秒一次心跳，讓 NAT／Wi-Fi 省電模式不要把閒置連線收掉
       this.pingTimer = window.setInterval(() => this.send({ t: 'ping' }), 25_000)
     }

@@ -63,6 +63,9 @@ export type ClientMessage =
   | { t: 'auth'; token: string }
   /** 配對（跨 origin 的 fetch 會被 CORS 擋，所以配對也走 WebSocket） */
   | { t: 'pairRequest'; code: string; name: string }
+  /** A colleague's invite link (cowork-agui-implement.md §13): a one-time code for one channel */
+  | { t: 'guestJoin'; code: string; name: string }
+  | { t: 'guestAuth'; token: string }
   | { t: 'attach'; id: string }
   | { t: 'detach'; id: string }
   | { t: 'input'; id: string; data: string }
@@ -88,6 +91,9 @@ export type ClientMessage =
 export type ServerMessage =
   | { t: 'paired'; token: string; deviceId: string }
   | { t: 'authed'; deviceId: string; deviceName: string; hostName: string }
+  /** A colleague's connection: one channel, no devices, terminals or files */
+  | { t: 'authed'; guest: { id: string; name: string; channelId: string }; hostName: string }
+  | { t: 'guestJoined'; token: string }
   | {
       t: 'state'
       sessions: RemoteSession[]
@@ -158,7 +164,7 @@ export const BUILTIN_LAUNCHERS: RemoteLauncher[] = [
 ]
 
 /** 手機可以呼叫的畫布操作（§3.9）；建立／刪除節點、合併、捨棄、全部結束、解除停止、開始團隊與核准合併請求只在桌面。與 wb-core PHONE_CANVAS_OPS 相同 */
-export const PHONE_CANVAS_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['channels.list', 'channel.get', 'node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])
+export const PHONE_CANVAS_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['channels.list', 'channel.get', 'node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause', 'chat.transcript', 'chat.send', 'chat.answer', 'ask.answer'])
 
 /** 這些操作要留下稽核紀錄（只記識別碼與長度，不含訊息或理由內容）；白名單外的嘗試一律也記 */
-export const PHONE_AUDITED_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause'])
+export const PHONE_AUDITED_OPS: ReadonlySet<CanvasOp> = new Set<CanvasOp>(['node.approve', 'node.reject', 'node.message', 'stop', 'relay.approve', 'relay.reject', 'team.pause', 'chat.send', 'chat.answer', 'ask.answer'])

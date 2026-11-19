@@ -184,6 +184,44 @@ fn git_guard(dir: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 /// Leaves a creation record on failure; startup/launch failures must not force-delete user data.
+/// Shared project memory (.project-memory) is not in git, so a new worktree would not have it. Each node worktree gets a
+/// link to the main checkout's memory; removal takes the link away first, because a recursive delete on Windows goes
+/// through junctions and would delete the memory itself (memory: worktree-junction-deletes-target).
+pub const MEMORY: &str = ".project-memory";
+
+fn memory_link(wt: &Path) -> Option<PathBuf> {
+    let link = wt.join(MEMORY);
+    fs::symlink_metadata(&link).ok().filter(is_link).map(|_| link)
+}
+
+fn link_memory(root: &Path, wt: &Path, common_dir: &str) {
+    let source = root.join(MEMORY);
+    if !source.exists() || fs::symlink_metadata(wt.join(MEMORY)).is_ok() {
+        return;
+    }
+    // Ignored in every worktree of this repo, so the link can never be committed
+    let file = Path::new(common_dir).join("info").join("exclude");
+    let text = crate::util::read_text(&file).unwrap_or_default();
+    if !text.lines().any(|l| matches!(l.trim(), "/.project-memory" | ".project-memory" | ".project-memory/")) {
+        let sep = if !text.is_empty() && !text.ends_with('\n') { "\n" } else { "" };
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&file) {
+            let _ = write!(f, "{sep}# Agent Workbench: node worktrees link the shared project memory\n/.project-memory\n");
+        }
+    }
+    let target = crate::util::real_path(&p(&source));
+    #[cfg(windows)]
+    let _ = junction::create(&target, wt.join(MEMORY));
+    #[cfg(not(windows))]
+    let _ = std::os::unix::fs::symlink(&target, wt.join(MEMORY));
+}
+
+/// Removes only the link; a real folder by that name is the user's and stays
+fn unlink_memory(wt: &Path) -> Result<()> {
+    let Some(link) = memory_link(wt) else { return Ok(()) };
+    let r = if cfg!(windows) { fs::remove_dir(&link) } else { fs::remove_file(&link) };
+    r.map_err(|e| format!("could not remove the memory link {}: {e}", link.display()))
+}
+
 pub fn create_node(repo: &Path, channel: &str, id: &str, custom_root: Option<&str>) -> Result<NodeWorktree> {
     validate_id(channel)?;
     validate_id(id)?;
@@ -211,6 +249,7 @@ pub fn create_node(repo: &Path, channel: &str, id: &str, custom_root: Option<&st
     owner.hooks_hash = fingerprint(&hooks)?;
     g::add_worktree(repo, &path, &node.branch, &node.base_commit)?;
     fs::write(git_dir(&path)?.join("wb-node-owner"), &owner.nonce).map_err(|e| e.to_string())?;
+    link_memory(Path::new(&baseline.root), &path, &owner.common_dir);
     owner.ready = true;
     write_json_atomic(&file, &serde_json::to_value(&owner).map_err(|e| e.to_string())?)?;
     Ok(node)
@@ -442,7 +481,14 @@ pub struct DiscardToken {
     fingerprint: String,
 }
 
-fn ignored(dir: &Path) -> Result<Vec<String>> { paths(dir, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]) }
+fn ignored(dir: &Path) -> Result<Vec<String>> {
+    let mut list = paths(dir, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])?;
+    // Our own memory link is not the node's data
+    if memory_link(dir).is_some() {
+        list.retain(|p| p.trim_end_matches('/') != MEMORY && !p.starts_with(".project-memory/"));
+    }
+    Ok(list)
+}
 
 fn hash_tree(path: &Path, hash: &mut Sha256, root: bool) -> Result<()> {
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -459,6 +505,7 @@ fn hash_tree(path: &Path, hash: &mut Sha256, root: bool) -> Result<()> {
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             if root && entry.file_name() == ".git" { continue; }
+            if root && entry.file_name() == MEMORY && memory_link(path).is_some() { continue; }
             let name = entry.file_name();
             let name = name.to_str().ok_or("non-UTF8 path")?;
             hash.update((name.len() as u64).to_le_bytes());
@@ -513,6 +560,8 @@ pub fn discard_preview(repo: &Path, node: &NodeWorktree, target_branch: &str) ->
 
 fn remove_owned(repo: &Path, node: &NodeWorktree) -> Result<()> {
     owned(repo, node)?;
+    // The memory link goes first: git's recursive delete would follow it into the shared memory
+    unlink_memory(Path::new(&node.path))?;
     // No recursive filesystem fallback: a locked/failed git removal must preserve the directory for retry.
     g::git(repo, &["worktree", "remove", "--force", &node.path])?;
     let record = record_path(repo, node)?;
@@ -722,6 +771,48 @@ mod tests {
 
     impl Drop for Repo {
         fn drop(&mut self) { let _ = remove_tree(&self.temp); }
+    }
+
+    #[test]
+    fn node_worktrees_link_memory_and_removal_never_touches_it() {
+        let r = Repo::new();
+        let memory = r.temp.join("cloud-memory");
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(memory.join("handoff.md"), "keep me
+").unwrap();
+        #[cfg(windows)]
+        junction::create(&memory, r.repo.join(MEMORY)).unwrap();
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink(&memory, r.repo.join(MEMORY)).unwrap();
+        let node = r.node();
+        let wt = Path::new(&node.path);
+        assert_eq!(fs::read_to_string(wt.join(MEMORY).join("handoff.md")).unwrap(), "keep me
+");
+        // Not a change of the node, not committable, not blocking cleanup
+        let c = changes_summary(&r.repo, &node, 0).unwrap();
+        assert!(c.untracked.iter().all(|f| !f.path.starts_with(MEMORY)));
+        assert!(ignored(wt).unwrap().is_empty());
+        cleanup(&r.repo, &node, "main").unwrap();
+        assert!(!wt.exists());
+        assert_eq!(fs::read_to_string(memory.join("handoff.md")).unwrap(), "keep me
+", "the shared memory survives");
+    }
+
+    #[test]
+    fn discard_with_a_memory_link_keeps_the_memory() {
+        let r = Repo::new();
+        let memory = r.temp.join("cloud-memory");
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(memory.join("INDEX.md"), "x").unwrap();
+        #[cfg(windows)]
+        junction::create(&memory, r.repo.join(MEMORY)).unwrap();
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink(&memory, r.repo.join(MEMORY)).unwrap();
+        let node = r.node();
+        fs::write(Path::new(&node.path).join("new.txt"), "work").unwrap();
+        let preview = discard_preview(&r.repo, &node, "main").unwrap();
+        discard(&r.repo, &preview.token).unwrap();
+        assert!(memory.join("INDEX.md").exists());
     }
 
     #[test]

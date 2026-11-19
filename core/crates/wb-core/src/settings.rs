@@ -426,6 +426,22 @@ impl Core {
                 self.host.send_all("settings:changed", json!([]));
                 Ok(Value::Null)
             }
+            // The Bearer key of an AG-UI endpoint (custom agent, protocol agui-http): sealed like the proxy password
+            "settings:customAgentKey" => {
+                let key = args.first().and_then(Value::as_str).ok_or("Invalid key")?;
+                if key.len() > 8192 || key.chars().any(char::is_control) {
+                    return Err("Invalid key".into());
+                }
+                let path = self.custom_agent_key_path();
+                if key.is_empty() {
+                    let _ = fs::remove_file(path);
+                } else {
+                    let sealed = wb_secrets::protect(key.as_bytes()).map_err(|_| "Could not encrypt the key")?;
+                    fs::write(path, sealed).map_err(|_| "Could not save the key")?;
+                }
+                Ok(Value::Null)
+            }
+            "settings:customAgentKeySet" => Ok(Value::Bool(self.custom_agent_key_path().exists())),
             "settings:proxyStatus" => {
                 let proxy = self.load_settings()["proxy"].clone();
                 let sealed = self.proxy_sealed()?;
@@ -465,6 +481,17 @@ impl Core {
             "settings:testCliPath" => Ok(test_cli_path(arg_str(args, 0))),
             "settings:testDocToolPath" => Ok(test_doc_tool(arg_str(args, 0))),
             _ => Err(format!("No handler registered for '{channel}'")),
+        }
+    }
+
+    pub fn custom_agent_key_path(&self) -> PathBuf {
+        self.data_dir.join("custom-agent-key.enc")
+    }
+
+    pub fn custom_agent_key(&self) -> Result<String, String> {
+        match fs::read(self.custom_agent_key_path()) {
+            Ok(sealed) => String::from_utf8(wb_secrets::unprotect(&sealed).map_err(|_| "Could not decrypt the agent key")?).map_err(|_| "Invalid stored agent key".into()),
+            Err(_) => Ok(String::new()),
         }
     }
 

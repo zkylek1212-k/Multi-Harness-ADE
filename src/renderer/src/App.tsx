@@ -14,7 +14,7 @@ import VibeUsageBar from '@/components/VibeUsageBar'
 import RemoteIndicator from '@/components/RemoteIndicator'
 import { ProxyStatusPill } from '@/components/ProxySettings'
 // React Flow 只在進 Cowork 模式時載入，不拖慢 Developer／Vibe 啟動
-const CanvasView = lazy(() => import('@panels/canvas/CanvasView'))
+const CoworkView = lazy(() => import('@panels/cowork/CoworkView'))
 import {
   IconSidebarCollapse,
   IconSidebarExpand,
@@ -83,7 +83,7 @@ export default function App(): JSX.Element {
   } = useWorkbench()
   const isVibe = uiMode === 'vibe'
   const isCowork = uiMode === 'cowork'
-  // Cowork 畫布蓋在原本的版面上；底下仍是 Developer 版面且保持掛載，終端不會因切換模式而結束（§2.4）
+  // Cowork 蓋在原本的版面上；底下仍是 Developer 版面且保持掛載，終端不會因切換模式而結束（§2.4）
   const layoutMode: 'developer' | 'vibe' = isVibe ? 'vibe' : 'developer'
   // Vibe 模式左欄只當任務看板（Dashboard）；Files / Git 收起，程式碼改由中欄「程式碼」分頁看 diff
   const activeSidebarTab = isVibe ? 'dashboard' : sidebarTab
@@ -492,8 +492,8 @@ export default function App(): JSX.Element {
 
       {/* 工作區（各欄起始 Y 座標完全齊平，底線絕對水平對齊） */}
       {isCowork && (
-        <Suspense fallback={<div className="cv-root" />}>
-          <CanvasView />
+        <Suspense fallback={<div className="cw-root" />}>
+          <CoworkView />
         </Suspense>
       )}
       {/* Cowork 模式只把版面藏起來，不卸載：終端與編輯器狀態都留著（§2.4） */}

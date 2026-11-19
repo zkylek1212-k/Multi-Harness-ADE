@@ -1,4 +1,5 @@
 //! The whole backend behind one call, independent of any UI framework.
+pub mod agui;
 pub mod approval_hook;
 pub mod bgtasks;
 pub mod canvas;
@@ -50,6 +51,7 @@ pub fn test_call(name: &str, a: &[Value]) -> Result<Value, String> {
     let to_json = |d: usage::Days| serde_json::to_value(d).map_err(|e| e.to_string());
     match name {
         "claudeBgTasks" => Ok(Value::Array(bgtasks::claude_bg_tasks(text(0)))),
+        "codexSchemaMissing" => Ok(serde_json::json!(agui::codex::missing(std::path::Path::new(text(0))))),
         "codexBgTasks" => Ok(Value::Array(bgtasks::codex_bg_tasks(text(0)))),
         "antigravityBgTasks" => Ok(Value::Array(bgtasks::antigravity_bg_tasks(text(0)))),
         "claudeDays" => to_json(usage::claude_days(text(0))),

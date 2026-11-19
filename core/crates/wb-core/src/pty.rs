@@ -315,7 +315,46 @@ fn read_launchers(ws: &str) -> Vec<Launcher> {
     out
 }
 
+fn proxy_password(sealed: &[u8]) -> Result<String, String> {
+    if sealed.is_empty() {
+        return Ok(String::new());
+    }
+    let plain = wb_secrets::unprotect(sealed).map_err(|_| "Could not decrypt proxy password")?;
+    String::from_utf8(plain).map_err(|_| "Invalid stored proxy password".to_string())
+}
+
 impl Core {
+    /// Executable, leading args and environment for a chat node's headless CLI (cowork-agui-implement.md §4): the same
+    /// executable, connections and proxy as a terminal node, none of the TUI tweaks, and nothing inherited from a
+    /// parent agent session. npm shims are left to `launch_plan`, which runs their target directly.
+    pub fn agent_process(&self, name: &str) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
+        let (mut target, args) = if name == CUSTOM_AGENT_ID {
+            let c = sanitize_custom_agent(self.load_settings().get("customAgent"));
+            let cmd = sv(&c, "command");
+            if c["enabled"] != json!(true) || cmd.is_empty() {
+                return Err("Custom Agent is disabled or has no executable".into());
+            }
+            let extra: Vec<String> = c["args"].as_array().unwrap().iter().filter_map(Value::as_str).map(str::to_string).collect();
+            (if exists(cmd) { cmd.to_string() } else { find_cli(cmd, false).unwrap_or_else(|| cmd.to_string()) }, extra)
+        } else if is_agent(name) {
+            let found = self.custom_cli_path(name).or_else(|| self.find_agent_cli(name, false));
+            (found.unwrap_or_else(|| if name == "antigravity" { "agy".into() } else { name.into() }), Vec::new())
+        } else {
+            return Err(format!("{name} has no chat mode"));
+        };
+        if cfg!(windows) && !Path::new(&target).extension().is_some_and(|e| ["exe", "cmd", "bat"].contains(&e.to_string_lossy().to_lowercase().as_str())) {
+            if let Some(t) = [".exe", ".cmd", ".bat"].iter().map(|e| format!("{target}{e}")).find(|t| exists(t)) {
+                target = t;
+            }
+        }
+        let mut env: Vec<(String, String)> = std::env::vars().collect();
+        env.extend(resolve_connection_env(self));
+        let proxy = effective_proxy(&self.load_settings()["proxy"], name);
+        let sealed = if proxy["mode"] == "custom" { self.proxy_sealed()? } else { Vec::new() };
+        apply_proxy_env(&mut env, &proxy, &proxy_password(&sealed)?);
+        Ok((target, args, crate::agui::session::clean_env(env)))
+    }
+
     /// Logical name to executable plus leading args; scripts get the right interpreter on Windows
     fn resolve_pty_command(&self, name: &str) -> Result<(String, Vec<String>), String> {
         let win = cfg!(windows);
@@ -464,11 +503,7 @@ impl Core {
         env.extend(resolve_connection_env(self));
         let proxy = effective_proxy(&self.load_settings()["proxy"], o_launcher.or(o_cmd).unwrap_or("shell"));
         let sealed = if proxy["mode"] == "custom" { self.proxy_sealed()? } else { Vec::new() };
-        let password = if sealed.is_empty() { String::new() } else {
-            let plain = wb_secrets::unprotect(&sealed).map_err(|_| "Could not decrypt proxy password")?;
-            String::from_utf8(plain).map_err(|_| "Invalid stored proxy password")?
-        };
-        apply_proxy_env(&mut env, &proxy, &password);
+        apply_proxy_env(&mut env, &proxy, &proxy_password(&sealed)?);
         let proxy_started = proxy_snapshot(&proxy, &sealed);
         let is_agy = !is_custom && (target_agent.as_deref() == Some("antigravity") || command.to_lowercase().contains("agy") || o_cmd == Some("antigravity") || o_launcher == Some("antigravity"));
         if is_agy {

@@ -92,11 +92,20 @@ pub fn mount(core: &Arc<Core>, agent: &str) -> Mount {
         "antigravity" => "agy",
         _ => return Mount::none(),
     };
-    if cli == "agy" {
+    // With permissions bypassed the CLI never asks, so there is nothing to hook
+    mount_as(core, cli, agent, !core.is_cli_bypass() && enabled(core, agent))
+}
+
+/// A chat node (canvas/chat.rs): the team MCP server only. Its approvals already come through the harness, so no hook.
+/// `cli` is the shape of the chat protocol: claude, codex or agy.
+pub fn mount_chat(core: &Arc<Core>, cli: &str, agent: &str) -> Mount {
+    mount_as(core, cli, agent, false)
+}
+
+fn mount_as(core: &Arc<Core>, cli: &str, agent: &str, hook: bool) -> Mount {
+    if cli == "agy" && agent == "antigravity" {
         let _ = sync_agy(core);
     }
-    // With permissions bypassed the CLI never asks, so there is nothing to hook
-    let hook = !core.is_cli_bypass() && enabled(core, agent);
     let mcp = mcp_enabled(core, agent);
     if !hook && !mcp {
         return Mount::none();

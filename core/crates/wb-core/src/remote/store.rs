@@ -3,6 +3,8 @@
 //   devices.json  paired devices (only a token's SHA-256)
 //   secrets.json  CA, server and VAPID private keys, sealed with the OS key
 //   audit.log     pairing, connections, terminals opened and closed; never what was typed
+//   guests.json   colleagues invited into one channel (cowork-agui-implement.md §13): only a token's SHA-256
+//   invites.json  their one-time invite codes, also hashed
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,6 +20,9 @@ use crate::conn::{protect_b64, unprotect_b64};
 use crate::util::{iso, js_len, js_prefix, now_ms, sv, uuid};
 
 pub const DEFAULT_PORT: u16 = 47600;
+/// An invite link lasts a week; a channel takes ten colleagues (§13.2)
+pub const INVITE_TTL_MS: f64 = 7.0 * 24.0 * 3_600_000.0;
+pub const MAX_GUESTS: usize = 10;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -172,6 +177,86 @@ impl Store {
         self.save_devices(&list);
     }
 
+    // ---------- guests (§13) ----------
+
+    fn random_token() -> String {
+        let mut raw = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut raw);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+    }
+
+    pub fn load_guests(&self) -> Vec<Value> {
+        self.read("guests.json").and_then(|v| v.as_array().cloned()).unwrap_or_default()
+    }
+
+    /// A one-time code for this channel only. Expired codes are dropped on the way.
+    pub fn add_invite(&self, channel: &str, repo: &str) -> Result<(String, f64), String> {
+        let _g = self.devices.lock().unwrap();
+        if self.load_guests().iter().filter(|g| sv(g, "channel") == channel).count() >= MAX_GUESTS {
+            return Err(format!("A channel takes at most {MAX_GUESTS} colleagues"));
+        }
+        let code = Self::random_token();
+        let expires = now_ms() + INVITE_TTL_MS;
+        let mut list: Vec<Value> = self.read("invites.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        list.retain(|i| i["expiresAt"].as_f64().unwrap_or(0.0) > now_ms());
+        list.push(json!({ "codeHash": hash_token(&code), "channel": channel, "repo": repo, "expiresAt": expires }));
+        self.write("invites.json", &json!(list))?;
+        Ok((code, expires))
+    }
+
+    /// Spends an invite: a guest for its channel and the token their browser keeps. A used, expired or unknown code
+    /// gives nothing.
+    pub fn redeem_invite(&self, code: &str, name: &str) -> Option<(Value, String)> {
+        if code.is_empty() || js_len(code) > 200 {
+            return None;
+        }
+        let _g = self.devices.lock().unwrap();
+        let want = hash_token(code);
+        let mut list: Vec<Value> = self.read("invites.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let i = list.iter().position(|x| ct_eq(sv(x, "codeHash").as_bytes(), want.as_bytes()))?;
+        let inv = list.remove(i);
+        let _ = self.write("invites.json", &json!(list));
+        let channel = sv(&inv, "channel").to_string();
+        let mut guests = self.load_guests();
+        if inv["expiresAt"].as_f64().unwrap_or(0.0) < now_ms() || guests.iter().filter(|g| sv(g, "channel") == channel).count() >= MAX_GUESTS {
+            return None;
+        }
+        let token = Self::random_token();
+        let now = now_ms() as u64;
+        let clean: String = name.chars().filter(|c| !c.is_control() && *c != ':').collect();
+        let name = js_prefix(clean.trim(), 40);
+        let guest = json!({ "id": uuid(), "channel": channel, "repo": sv(&inv, "repo"), "name": if name.is_empty() { "Guest" } else { &name }, "tokenHash": hash_token(&token), "createdAt": now, "lastSeenAt": now });
+        guests.push(guest.clone());
+        let _ = self.write("guests.json", &json!(guests));
+        Some((guest, token))
+    }
+
+    pub fn find_guest_by_token(&self, token: &str) -> Option<Value> {
+        if token.is_empty() || js_len(token) > 200 {
+            return None;
+        }
+        let want = hash_token(token);
+        self.load_guests().into_iter().find(|g| ct_eq(sv(g, "tokenHash").as_bytes(), want.as_bytes()))
+    }
+
+    pub fn touch_guest(&self, id: &str) {
+        let _g = self.devices.lock().unwrap();
+        let mut list = self.load_guests();
+        for g in list.iter_mut().filter(|g| sv(g, "id") == id) {
+            g["lastSeenAt"] = json!(now_ms() as u64);
+        }
+        let _ = self.write("guests.json", &json!(list));
+    }
+
+    pub fn remove_guest(&self, id: &str) -> bool {
+        let _g = self.devices.lock().unwrap();
+        let list = self.load_guests();
+        let kept: Vec<Value> = list.iter().filter(|g| sv(g, "id") != id).cloned().collect();
+        let gone = kept.len() != list.len();
+        let _ = self.write("guests.json", &json!(kept));
+        gone
+    }
+
     pub fn remove_device(&self, id: &str) {
         let _g = self.devices.lock().unwrap();
         let list: Vec<Value> = self.load_devices().into_iter().filter(|d| sv(d, "id") != id).collect();
@@ -226,7 +311,7 @@ impl Store {
 
     /// Reset trust: drops the CA and every paired device. The old certificate on a phone is for its owner to remove.
     pub fn reset_all(&self) {
-        for f in ["secrets.json", "devices.json"] {
+        for f in ["secrets.json", "devices.json", "guests.json", "invites.json"] {
             let _ = fs::remove_file(self.dir.join(f));
         }
     }
@@ -277,6 +362,29 @@ mod tests {
         }
         s.save_config(Some(true), Some(&json!(50000)), None);
         assert!(s.load_config().enabled && s.load_config().port == 50000);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_invite_is_used_once_and_only_its_hash_is_kept() {
+        let (s, dir) = store();
+        let (code, exp) = s.add_invite("ch1", "C:/r").unwrap();
+        assert!(exp > now_ms());
+        let raw = fs::read_to_string(dir.join("remote").join("invites.json")).unwrap();
+        assert!(!raw.contains(&code), "the code itself is never written");
+        assert!(s.redeem_invite("wrong", "Ann").is_none());
+        let (g, token) = s.redeem_invite(&code, "Ann:\u{1b}x").unwrap();
+        assert_eq!((sv(&g, "channel"), sv(&g, "name")), ("ch1", "Annx"), "the name loses colons and control characters");
+        assert!(s.redeem_invite(&code, "Bob").is_none(), "one use");
+        assert_eq!(sv(&s.find_guest_by_token(&token).unwrap(), "id"), sv(&g, "id"));
+        assert!(!fs::read_to_string(dir.join("remote").join("guests.json")).unwrap().contains(&token));
+        assert!(s.remove_guest(sv(&g, "id")));
+        assert!(s.find_guest_by_token(&token).is_none(), "revoked at once");
+        for _ in 0..MAX_GUESTS {
+            let (c, _) = s.add_invite("ch2", "r").unwrap();
+            s.redeem_invite(&c, "x").unwrap();
+        }
+        assert!(s.add_invite("ch2", "r").is_err(), "ten per channel");
         let _ = fs::remove_dir_all(dir);
     }
 
