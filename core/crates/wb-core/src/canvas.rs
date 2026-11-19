@@ -16,6 +16,7 @@ use crate::util::{js_prefix, now_ms, p, read_json_with_fallback, real_path, uuid
 use crate::worktree::{self as wt, NodeWorktree};
 
 mod chat;
+mod models;
 mod routine;
 mod team;
 pub use chat::AGUI_EVENT;
@@ -88,6 +89,11 @@ struct Node {
     /// A report-only routine's Bot: the CLI's own read-only mode (§11.1)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     read_only: bool,
+    /// The model and effort it runs with (canvas/models.rs); unset = the CLI's own default
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -518,6 +524,9 @@ fn launch_pty(core: &Arc<Core>, repo: &Arc<Repo>, channel: &str, node: &Node, ex
     let generation = uuid();
     let mount = crate::approval_hook::mount(core, &node.agent);
     args.extend(mount.args);
+    if let Some(cli) = models::cli_of(core, &node.agent) {
+        args.extend(models::args(cli, false, node.model.as_deref(), node.effort.as_deref()));
+    }
     args.extend(extra);
     opts["args"] = json!(args);
     let pty = core.spawn_pty_env(&opts, &p(&repo.root), 0, false, mount.env).map_err(|e| err("invalid", e))?;
@@ -591,6 +600,10 @@ fn sanitize_text(text: &str, keep_newlines: bool) -> String {
 }
 
 fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -> R<Value> {
+    // What a Bot can run with: for the pickers; no repository involved
+    if op == "agent.models" {
+        return models::list(core, s(req, "agent"));
+    }
     // Routines belong to the app, not to one repository's conversations
     if op.starts_with("routine.") {
         return if origin == Origin::Desktop { routine::dispatch_op(core, ws, op, req) } else { Err(err("not-allowed", "Desktop only")) };
@@ -695,6 +708,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             };
             let in_root = s(req, "workspace") == "root";
             let role = role_of(req);
+            let (model, effort) = models::pick(req)?;
             let id = short_id();
             {
                 let mut st = repo.st.lock().unwrap();
@@ -710,7 +724,7 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
                     return Err(err("invalid", "Too many nodes"));
                 }
                 // The record comes first, so a failure below still leaves something to inspect and retry
-                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None, role, read_only: req["readOnly"] == true });
+                c.nodes.push(Node { id: id.clone(), agent: agent.clone(), worktree: None, mode, session: None, role, read_only: req["readOnly"] == true, model, effort });
                 team::sync_group(c);
                 repo.save(c)?;
                 st.rt.insert(key(&ch, &id), NodeRt { status: "creating", ..Default::default() });
@@ -742,6 +756,40 @@ fn dispatch(core: &Arc<Core>, ws: &str, op: &str, req: &Value, origin: Origin) -
             let out = result.map_err(fail);
             emit(core, &repo, &ch);
             out
+        }
+        // A chat Bot restarts on the same session with the new model (it must be between turns); a terminal one
+        // takes it at its next restart
+        "node.model" if origin == Origin::Desktop => {
+            let (model, effort) = models::pick(req)?;
+            let (node, chat) = {
+                let mut st = repo.st.lock().unwrap();
+                let st = &mut *st;
+                let (chat, busy) = st.rt.get(&key(&ch, &nd)).map(|r| (r.chat.clone().filter(|_| r.status == "running"), r.in_run)).unwrap_or((None, false));
+                if chat.is_some() && busy {
+                    return Err(err("busy", "Wait for this turn to end, or stop it, then change the model"));
+                }
+                let c = st.channels.get_mut(&ch).ok_or_else(|| err("not-found", "channel"))?;
+                let n = c.nodes.iter_mut().find(|n| n.id == nd).ok_or_else(|| err("not-found", "node"))?;
+                n.model = model;
+                n.effort = effort;
+                let node = n.clone();
+                repo.save(c)?;
+                (node, chat)
+            };
+            let restarted = chat.is_some();
+            if let Some(c) = chat {
+                c.kill();
+                let until = Instant::now() + EXIT_WAIT;
+                while repo.st.lock().unwrap().rt.get(&key(&ch, &nd)).is_some_and(|r| r.chat.is_some()) {
+                    if Instant::now() > until {
+                        return Err(err("busy", "The agent did not stop"));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                chat::launch(core, &repo, &ch, &node)?;
+            }
+            emit(core, &repo, &ch);
+            Ok(json!({ "restarted": restarted }))
         }
         "node.role" if origin == Origin::Desktop => {
             {
@@ -1340,7 +1388,7 @@ mod tests {
 
     #[test]
     fn channel_validation_rejects_bad_ids() {
-        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None, role: None, read_only: false };
+        let n = |id: &str| Node { id: id.into(), agent: "claude".into(), worktree: None, mode: None, session: None, role: None, read_only: false, model: None, effort: None };
         let mut c = Channel { schema_version: 1, id: "abc".into(), name: "x".into(), nodes: vec![n("a"), n("b")], events: vec![], teams: vec![], tasks: Default::default(), board: vec![], routine: None };
         assert!(channel_ok(&c));
         c.nodes.push(n("../x"));

@@ -9,28 +9,31 @@ import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelSummary, ChannelView, NodeMode, StopState } from '../../../../shared/canvas'
 import BotsView from './BotsView'
+import ModelPicker from './ModelPicker'
 import RoutinesView, { RoutineFindings, useRoutines } from './RoutinesView'
 import Conversation, { leadOf } from './Conversation'
 import Workspace from './Workspace'
 import { ago, BUILTIN_AGENTS, CHAT_AGENTS, markOf, recall, remember, type CanvasCall } from './types'
 
-/** A terminal CLI gets the first message once its prompt is up; after this it is left for the user to paste */
-const FIRST_MESSAGE_WAIT_MS = 90_000
 
 function titleOf(text: string): string {
   const line = text.trim().split('\n')[0].replace(/\s+/g, ' ')
   return line.length > 40 ? `${line.slice(0, 39)}…` : line
 }
 
+type Pick = { model: string; effort: string }
+
 function Home({
+  call,
   launchers,
   canChat,
   onStart,
   busy
 }: {
+  call: CanvasCall
   launchers: CliLauncher[]
   canChat: (agent: string) => boolean
-  onStart: (agent: string, mode: NodeMode, text: string) => Promise<boolean>
+  onStart: (agent: string, mode: NodeMode, text: string, pick: Pick) => Promise<boolean>
   busy: boolean
 }): JSX.Element {
   const { t } = useTranslation()
@@ -41,27 +44,40 @@ function Home({
   const [agent, setAgent] = useState(() => recall(agentKey) || 'claude')
   const [mode, setMode] = useState<NodeMode>(() => (recall(modeKey) === 'chat' ? 'chat' : 'terminal'))
   const [text, setText] = useState('')
+  // The model and effort last used with each Bot in this repo
+  const pickKey = (a: string): string => `wb-cowork-model:${workspaceRoot}:${a}`
+  const readPick = (a: string): Pick => {
+    try {
+      return { model: '', effort: '', ...JSON.parse(recall(pickKey(a)) || '{}') }
+    } catch {
+      return { model: '', effort: '' }
+    }
+  }
+  const [pick, setPick] = useState<Pick>(() => readPick(agent))
+  useEffect(() => setPick(readPick(agent)), [agent, workspaceRoot])
   const chatOk = canChat(agent)
   const effective: NodeMode = chatOk ? mode : 'terminal'
 
   const submit = async (): Promise<void> => {
     let body = text.trim()
-    let pick = agent
+    let pickAgent = agent
     // "@Codex fix…" picks the Bot and is not part of the message
     const m = /^@(\S+)\s*/.exec(body)
     if (m) {
       const want = m[1].toLowerCase()
       const hit = launchers.find((l) => l.id.toLowerCase() === want || l.name.replace(/\s+/g, '').toLowerCase() === want)
       if (hit) {
-        pick = hit.id
+        pickAgent = hit.id
         body = body.slice(m[0].length)
       }
     }
     if (!body) return
-    const md: NodeMode = canChat(pick) ? mode : 'terminal'
-    remember(agentKey, pick)
+    const md: NodeMode = canChat(pickAgent) ? mode : 'terminal'
+    remember(agentKey, pickAgent)
     remember(modeKey, mode)
-    if (await onStart(pick, md, body)) setText('')
+    const p = pickAgent === agent ? pick : readPick(pickAgent)
+    remember(pickKey(pickAgent), p.model || p.effort ? JSON.stringify(p) : null)
+    if (await onStart(pickAgent, md, body, p)) setText('')
   }
 
   return (
@@ -102,6 +118,7 @@ function Home({
                 </button>
               ))}
             </div>
+            <ModelPicker call={call} agent={agent} model={pick.model} effort={pick.effort} onChange={(model, effort) => setPick({ model, effort })} />
             <div className="cw-grow" />
             <button className="cw-send" aria-label={t('cw.send')} disabled={busy || !text.trim()} onClick={() => void submit()}>↑</button>
           </div>
@@ -146,8 +163,6 @@ export default function CoworkView(): JSX.Element {
   const [botsVersion, setBotsVersion] = useState(0)
   const activeRef = useRef(active)
   activeRef.current = active
-  /** A terminal conversation's first message, waiting for its CLI prompt */
-  const first = useRef<{ channelId: string; nodeId: string; text: string; until: number } | null>(null)
 
   const call: CanvasCall = useCallback(async (op, req) => {
     setError(null)
@@ -193,25 +208,6 @@ export default function CoworkView(): JSX.Element {
     })
   }, [active, call, storeKey])
 
-  const deliverFirst = useCallback(
-    (v: ChannelView) => {
-      const f = first.current
-      if (!f || f.channelId !== v.channel.id) return
-      const rt = v.runtime[f.nodeId]
-      if (Date.now() > f.until) {
-        first.current = null
-        void navigator.clipboard.writeText(f.text).catch(() => {})
-        setError(t('cw.firstNotSent'))
-        return
-      }
-      if (rt?.status === 'running' && rt.inputReady && rt.sessionGeneration) {
-        first.current = null
-        void call('node.message', { channelId: f.channelId, nodeId: f.nodeId, sessionGeneration: rt.sessionGeneration, text: f.text })
-      }
-    },
-    [call, t]
-  )
-
   useEffect(
     () =>
       window.api.canvas.onUpdate((u) => {
@@ -220,10 +216,9 @@ export default function CoworkView(): JSX.Element {
           if (u.view) setView(u.view)
           else setActive(null)
         }
-        if (u.view) deliverFirst(u.view)
         void loadList()
       }),
-    [loadList, deliverFirst]
+    [loadList]
   )
 
   const [routines] = useRoutines(call)
@@ -231,18 +226,18 @@ export default function CoworkView(): JSX.Element {
   const canChat = useCallback((agent: string) => CHAT_AGENTS.includes(agent) || (agent === 'custom-agent' && chatCustom), [chatCustom])
   const agentName = useCallback((id: string) => launchers.find((l) => l.id === id)?.name ?? id, [launchers])
 
-  const start = async (agent: string, mode: NodeMode, text: string): Promise<boolean> => {
+  const start = async (agent: string, mode: NodeMode, text: string, pick: Pick): Promise<boolean> => {
     setBusy(true)
     try {
       const v = await call('channel.create', { name: titleOf(text) })
       if (!v) return false
       const channelId = v.channel.id
       setActive(channelId)
-      const node = await call('node.create', { channelId, agent, workspace: 'worktree', mode })
+      const node = await call('node.create', { channelId, agent, workspace: 'worktree', mode, model: pick.model || undefined, effort: pick.effort || undefined })
       if (!node) return false
-      // Through the group's inbox, so the first turn carries the brief and the team tools are explained
-      if (mode === 'chat') await call('chat.send', { channelId, text })
-      else first.current = { channelId, nodeId: node.id, text, until: Date.now() + FIRST_MESSAGE_WAIT_MS }
+      // The same way for every CLI and both modes: through the group's inbox, which hands it over once the CLI is
+      // ready (a chat turn, or typed into the terminal and sent) and puts the group brief in front of it
+      await call('chat.send', { channelId, text })
       void loadList()
       return true
     } finally {
@@ -335,7 +330,7 @@ export default function CoworkView(): JSX.Element {
       ) : page === 'routines' ? (
         <RoutinesView call={call} launchers={launchers} canChat={canChat} routines={routines} onOpen={(id) => setActive(id)} />
       ) : (
-        <Home launchers={launchers} canChat={canChat} onStart={start} busy={busy} />
+        <Home call={call} launchers={launchers} canChat={canChat} onStart={start} busy={busy} />
       )}
       {active && view && panel && <Workspace view={view} call={call} nodeId={focus && view.channel.nodes.some((n) => n.id === focus) ? focus : leadOf(view)} onClose={togglePanel} />}
       {error && (

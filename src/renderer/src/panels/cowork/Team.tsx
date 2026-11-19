@@ -5,6 +5,7 @@ import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { CanvasNode, ChannelView, NodeMode } from '../../../../shared/canvas'
+import ModelPicker, { modelLabel } from './ModelPicker'
 import { markOf, type CanvasCall } from './types'
 
 /** `@name` for each node: the Bot's name without spaces, numbered when two share it */
@@ -42,6 +43,7 @@ export function MembersBar({
   const [agent, setAgent] = useState('codex')
   const [mode, setMode] = useState<NodeMode>('chat')
   const [role, setRole] = useState('')
+  const [pick, setPick] = useState({ model: '', effort: '' })
   const [busy, setBusy] = useState(false)
   const team = view.teams[0]
   const lead = team?.leadId ?? view.channel.nodes[0]?.id
@@ -50,7 +52,7 @@ export function MembersBar({
 
   const add = async (): Promise<void> => {
     setBusy(true)
-    const node = await call('node.create', { channelId: view.channel.id, agent, workspace: 'worktree', mode: md, role: role.trim() || undefined })
+    const node = await call('node.create', { channelId: view.channel.id, agent, workspace: 'worktree', mode: md, role: role.trim() || undefined, model: pick.model || undefined, effort: pick.effort || undefined })
     setBusy(false)
     if (node) {
       setAdding(false)
@@ -70,6 +72,7 @@ export function MembersBar({
               <span>@{tags.get(n.id)}</span>
               {n.id === lead && <span className="cw-badge">{t('cw.lead')}</span>}
               {n.role && <span className="cw-muted cw-member-role">{n.role}</span>}
+              {modelLabel(n.model, n.effort) && <span className="cw-muted cw-member-role">{modelLabel(n.model, n.effort)}</span>}
               {(rt?.unread ?? 0) > 0 && <span className="cw-badge warn">{rt?.unread}</span>}
               <span className={`cw-dot st-${state}`} />
             </button>
@@ -102,6 +105,7 @@ export function MembersBar({
               </button>
             ))}
           </div>
+          <ModelPicker call={call} agent={agent} model={pick.model} effort={pick.effort} onChange={(model, effort) => setPick({ model, effort })} />
           <input className="cw-input cw-grow" value={role} maxLength={200} placeholder={t('cw.rolePlaceholder')} aria-label={t('cw.role')} onChange={(e) => setRole(e.target.value)} />
           <button className="cw-btn dark" disabled={busy} onClick={() => void add()}>{t('cw.add')}</button>
         </div>

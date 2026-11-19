@@ -142,7 +142,26 @@ try {
   await until(async () => !(await sqv()).runtime[L].inRun, 'the lead finished its turn', 30000)
   assert.ok(!(await entries(sq, L)).some((x) => x.kind === 'text' && x.text.trim() === 'PASS'), 'a PASS leaves nothing in the chat')
 
-  console.log('agui: protocol check, chat transcript, live events, one-shot approval, resume after restart, chat group (brief, @, relay, report memory, board claim, ask_person, free talk PASS) ok')
+  // ── model and effort (P7): on the CLI's command line, checked, and a change restarts on the same session ──
+  assert.deepEqual((await ok('agent.models', { agent: 'custom-agent' })).models.map((m: any) => m.id).slice(0, 2), ['fable', 'opus'], 'a claude-protocol Bot offers Claude aliases')
+  const mc = (await ok('channel.create', { name: 'models' })).channel.id
+  assert.equal((await c('node.create', { channelId: mc, agent: 'custom-agent', workspace: 'worktree', mode: 'chat', model: '--dangerously-skip-permissions' })).code, 'invalid', 'a model name is never a flag')
+  const mn = (await ok('node.create', { channelId: mc, agent: 'custom-agent', workspace: 'worktree', mode: 'chat', model: 'sonnet', effort: 'low' })).id
+  const argv = async (n: number): Promise<string> => {
+    await ok('chat.send', { channelId: mc, to: mn, text: 'show argv' })
+    const e = await waitEntries(mc, mn, (x) => x.filter((y) => y.kind === 'text' && y.text.startsWith('argv:')).length >= n, 'argv')
+    return e.filter((y) => y.kind === 'text' && y.text.startsWith('argv:')).at(-1).text
+  }
+  assert.match(await argv(1), /--model sonnet --effort low/)
+  await until(async () => !(await ok('channel.get', { channelId: mc })).runtime[mn].inRun, 'turn over', 30000)
+  assert.equal((await ok('node.model', { channelId: mc, nodeId: mn, model: 'haiku', effort: 'high' })).restarted, true)
+  await until(async () => (await ok('channel.get', { channelId: mc })).runtime[mn].status === 'running', 'running again', 30000)
+  const second = await argv(2)
+  assert.match(second, /--model haiku --effort high/)
+  assert.match(second, /--resume fake-session-1/, 'the same conversation goes on')
+  assert.equal((await ok('channel.get', { channelId: mc })).channel.nodes[0].model, 'haiku')
+
+  console.log('agui: protocol check, chat transcript, live events, one-shot approval, resume after restart, chat group (brief, @, relay, report memory, board claim, ask_person, free talk PASS), model and effort ok')
 } finally {
   b.stop()
 }

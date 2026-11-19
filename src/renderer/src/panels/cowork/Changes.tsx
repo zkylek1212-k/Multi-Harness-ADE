@@ -55,9 +55,9 @@ export default function Changes({ view, nodeId, call }: { view: ChannelView; nod
         setTarget(b.current)
       })
       .catch(() => {})
-    // 節點狀態一變（例如剛結束）或一輪做完就重讀改動
+    // 節點狀態一變（例如剛結束）、對話的一輪做完、或終端的 CLI 從忙碌變閒置，就重讀改動
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, rt?.status, rt?.inRun])
+  }, [nodeId, rt?.status, rt?.inRun, rt?.busy])
 
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
     setBusy(true)

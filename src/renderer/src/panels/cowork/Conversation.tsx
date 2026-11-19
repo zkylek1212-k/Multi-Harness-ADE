@@ -9,6 +9,7 @@ import type { CliLauncher } from '../../../../preload/index'
 import type { ChannelView, NodeRuntime } from '../../../../shared/canvas'
 import { toolSummary, type AguiUpdate, type TranscriptEntry } from '../../../../shared/agui'
 import Guests from './Guests'
+import ModelPicker, { useModelText } from './ModelPicker'
 import TerminalPane from './TerminalPane'
 import { handles, MembersBar, NeedsYou, TaskCards } from './Team'
 import { markOf, type CanvasCall } from './types'
@@ -202,6 +203,10 @@ export default function Conversation({
   const tags = useMemo(() => handles(nodes, agentName), [nodes, agentName])
   const label = (id: string): string => (id === 'app' ? 'Agent Workbench' : id.startsWith('guest:') ? t('cw.guestName', { name: id.slice(6) }) : `@${tags.get(id) ?? id}`)
   const [inviting, setInviting] = useState(false)
+  /** The model popover: a draft until Apply */
+  const [modelDraft, setModelDraft] = useState<{ model: string; effort: string } | null>(null)
+  const [modelNote, setModelNote] = useState<string | null>(null)
+  const modelText = useModelText(call, node?.agent ?? '', node?.model ?? '', node?.effort ?? '')
   const entries: Shown[] = useMemo(
     () => (!node ? [] : atLead && nodes.length > 1 ? groupThread(all, leadId) : (all[node.id] ?? []).map((e) => ({ node: node.id, e }))),
     [all, node, atLead, nodes.length, leadId]
@@ -276,9 +281,43 @@ export default function Conversation({
         ) : (
           status !== 'creating' && status !== 'closing' && <button className="cw-icon" disabled={busy || stopped} title={t('canvas.restart')} onClick={() => void act(() => call('node.restart', ids))}>↻</button>
         )}
+        <button className="cw-btn cw-model-btn" aria-expanded={!!modelDraft} title={t('cw.model')} onClick={() => setModelDraft(modelDraft ? null : { model: node.model ?? '', effort: node.effort ?? '' })}>
+          {modelText}
+        </button>
         <button className="cw-btn" aria-expanded={inviting} onClick={() => setInviting(!inviting)}>{t('cw.invite')}</button>
         <button className={`cw-icon ${panelOpen ? 'on' : ''}`} title={t('cw.workspace')} aria-pressed={panelOpen} onClick={onTogglePanel}>▭</button>
       </header>
+      {modelDraft && (
+        <div className="cw-invite-wrap">
+          <div className="cw-card cw-guests">
+            <div className="cw-row">
+              <b>{t('cw.modelFor', { bot: agentName(node.agent) })}</b>
+              <div className="cw-grow" />
+              <button className="cw-icon" aria-label={t('common.close')} onClick={() => setModelDraft(null)}>✕</button>
+            </div>
+            <div className="cw-row">
+              <ModelPicker call={call} agent={node.agent} model={modelDraft.model} effort={modelDraft.effort} onChange={(model, effort) => setModelDraft({ model, effort })} />
+              <button
+                className="cw-btn dark"
+                disabled={busy || (isChat && inRun)}
+                onClick={() =>
+                  void act(async () => {
+                    const r = await call('node.model', { ...ids, ...modelDraft })
+                    if (r) {
+                      setModelDraft(null)
+                      setModelNote(r.restarted ? t('cw.modelRestarted') : running && !isChat ? t('cw.modelNextStart') : null)
+                    }
+                  })
+                }
+              >
+                {t('cw.modelApply')}
+              </button>
+            </div>
+            <span className="cw-muted">{isChat ? (inRun ? t('cw.modelWaitTurn') : t('cw.modelChatNote')) : t('cw.modelTerminalNote')}</span>
+          </div>
+        </div>
+      )}
+      {modelNote && <div className="cw-invite-wrap cw-muted" role="status" onClick={() => setModelNote(null)}>{modelNote}</div>}
       {inviting && <div className="cw-invite-wrap"><Guests call={call} channelId={channelId} onClose={() => setInviting(false)} /></div>}
       <MembersBar view={view} call={call} agentName={agentName} launchers={launchers} canChat={canChat} focus={node.id} onFocus={setFocusId} />
 

@@ -62,6 +62,11 @@ pub struct Routine {
     /// Commit routines: the head they last saw
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seen_head: Option<String>,
+    /// The Bot's model and effort for each run (P7); unset = the CLI's default
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
 }
 
 // ---------- pure rules (unit tested) ----------
@@ -155,6 +160,9 @@ fn valid(r: &Routine, chat_ok: impl Fn(&str) -> bool) -> Result<(), String> {
     if !chat_ok(&r.agent) {
         return Err(format!("{} has no chat mode; a routine needs one", r.agent));
     }
+    if r.model.as_deref().is_some_and(|m| !super::models::model_ok(m)) || r.effort.as_deref().is_some_and(|e| !super::models::effort_ok(e)) {
+        return Err("Not a model name or effort".into());
+    }
     if !["report", "change"].contains(&r.scope.as_str()) {
         return Err("Scope is report or change".into());
     }
@@ -232,7 +240,7 @@ fn start_run(core: &Arc<Core>, r: Routine, extra: String) {
                 }
             }
             mark(&core, &r.id, |r| r.last_run = Some(LastRun { channel: ch.clone(), at: now_ms(), status: "running".into(), ..Default::default() }));
-            dispatch(&core, &r.repo, "node.create", &json!({ "channelId": ch, "agent": r.agent, "workspace": "worktree", "mode": chat::MODE, "readOnly": r.scope == "report" }), Origin::Desktop)?;
+            dispatch(&core, &r.repo, "node.create", &json!({ "channelId": ch, "agent": r.agent, "workspace": "worktree", "mode": chat::MODE, "readOnly": r.scope == "report", "model": r.model, "effort": r.effort }), Origin::Desktop)?;
             dispatch(&core, &r.repo, "chat.send", &json!({ "channelId": ch, "text": format!("{}\n\n{}{extra}", preface(&r), r.prompt) }), Origin::Desktop)?;
             Ok(ch)
         })();
@@ -469,7 +477,7 @@ mod tests {
 
     #[test]
     fn ten_failures_switch_it_off() {
-        let mut r = Routine { id: "r".into(), name: "n".into(), prompt: "p".into(), agent: "claude".into(), repo: ".".into(), scope: "report".into(), schedule: Schedule::Every { minutes: 60 }, enabled: true, next_at: 0.0, failures: 0, last_run: None, seen_head: None };
+        let mut r = Routine { id: "r".into(), name: "n".into(), prompt: "p".into(), agent: "claude".into(), repo: ".".into(), scope: "report".into(), schedule: Schedule::Every { minutes: 60 }, enabled: true, next_at: 0.0, failures: 0, last_run: None, seen_head: None, model: None, effort: None };
         assert_eq!(on_result(&mut r, false), Some("failed"), "the first failure is told");
         for _ in 2..FATIGUE {
             assert_eq!(on_result(&mut r, false), None);
@@ -483,7 +491,7 @@ mod tests {
     #[test]
     fn routines_are_checked() {
         let ok = |a: &str| a == "claude";
-        let mut r = Routine { id: "r".into(), name: "nightly".into(), prompt: "look".into(), agent: "claude".into(), repo: ".".into(), scope: "report".into(), schedule: Schedule::Every { minutes: 15 }, enabled: true, next_at: 0.0, failures: 0, last_run: None, seen_head: None };
+        let mut r = Routine { id: "r".into(), name: "nightly".into(), prompt: "look".into(), agent: "claude".into(), repo: ".".into(), scope: "report".into(), schedule: Schedule::Every { minutes: 15 }, enabled: true, next_at: 0.0, failures: 0, last_run: None, seen_head: None, model: None, effort: None };
         assert!(valid(&r, ok).is_ok());
         r.schedule = Schedule::Every { minutes: 14 };
         assert!(valid(&r, ok).is_err());

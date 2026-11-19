@@ -5,6 +5,7 @@ import { useTranslation } from '@/i18n'
 import AgentMark from '@/components/AgentMark'
 import type { CliLauncher } from '../../../../preload/index'
 import type { Routine, RoutineSchedule } from '../../../../shared/canvas'
+import ModelPicker, { modelLabel } from './ModelPicker'
 import { ago, markOf, type CanvasCall } from './types'
 
 const blank = (agent: string): Routine => ({ id: '', name: '', prompt: '', agent, repo: '', scope: 'report', schedule: { kind: 'daily', time: '09:00' }, enabled: true, nextAt: 0, failures: 0 })
@@ -126,6 +127,7 @@ export default function RoutinesView({ call, launchers, canChat, routines, onOpe
                 ))}
               </div>
             </div>
+            <ModelPicker call={call} agent={edit.agent} model={edit.model ?? ''} effort={edit.effort ?? ''} onChange={(model, effort) => setEdit({ ...edit, model: model || undefined, effort: effort || undefined })} />
             <ScheduleEdit s={edit.schedule} onChange={(schedule) => setEdit({ ...edit, schedule })} />
             <p className="cw-muted">{t(`cw.scopeHint_${edit.scope}`)}</p>
             <div className="cw-row">
@@ -142,6 +144,7 @@ export default function RoutinesView({ call, launchers, canChat, routines, onOpe
               <b>{r.name}</b>
               <span className="cw-chip">{t(`cw.scope_${r.scope}`)}</span>
               <span className="cw-muted">{schedText(r.schedule, t)}</span>
+              {modelLabel(r.model, r.effort) && <span className="cw-muted">{modelLabel(r.model, r.effort)}</span>}
               <div className="cw-grow" />
               <label className="cw-toggle">
                 <input type="checkbox" checked={r.enabled} onChange={(e) => void call('routine.save', { routine: { ...r, enabled: e.target.checked } })} />

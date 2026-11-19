@@ -48,6 +48,8 @@ export interface Routine {
   /** report: read-only, the finding goes to Needs you; change: may change code in its own worktree */
   scope: 'report' | 'change'
   schedule: RoutineSchedule
+  model?: string
+  effort?: string
   enabled: boolean
   nextAt: number
   nextAtText?: string
@@ -160,6 +162,18 @@ export interface CanvasNode {
   session?: string
   /** What this Bot does in the group; claiming and PASS go by it */
   role?: string
+  /** A report-only routine's Bot: the CLI's read-only mode */
+  readOnly?: boolean
+  /** Unset = the CLI's own default (P7) */
+  model?: string
+  effort?: string
+}
+
+/** What a Bot can run with (agent.models): suggestions, any name the CLI knows also works */
+export interface AgentModels {
+  models: { id: string; name: string; efforts?: string[] }[]
+  /** Empty: the model id carries the effort (agy) */
+  efforts: string[]
 }
 
 export type ChannelEvent =
@@ -333,7 +347,10 @@ export interface CanvasOps {
   'channel.rename': { req: { channelId: string; name: string }; res: void }
   /** Refused while any node still has a process or a worktree */
   'channel.delete': { req: { channelId: string }; res: void }
-  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode; role?: string }; res: CanvasNode }
+  'node.create': { req: { channelId: string; agent: string; workspace: 'worktree' | 'root'; mode?: NodeMode; role?: string; model?: string; effort?: string }; res: CanvasNode }
+  'agent.models': { req: { agent: string }; res: AgentModels }
+  /** A chat Bot restarts on the same session with it (between turns); a terminal one takes it at its next restart */
+  'node.model': { req: { channelId: string; nodeId: string; model: string; effort: string }; res: { restarted: boolean } }
   'node.role': { req: { channelId: string; nodeId: string; role: string }; res: void }
   'node.restart': { req: { channelId: string; nodeId: string }; res: void }
   /** Invalidates approvals, kills the PTY and waits for exit; keeps the worktree (pending-cleanup) */

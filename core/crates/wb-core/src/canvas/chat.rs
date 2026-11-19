@@ -211,6 +211,7 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
             // A report-only routine plans and reads; nothing it does writes (§11.1)
             args.extend(claude::args(resume, if node.read_only { "plan" } else { CLAUDE_MODE }, None));
             args.extend(mount.args);
+            args.extend(models::args("claude", true, node.model.as_deref(), node.effort.as_deref()));
             // Only the lead writes the shared memory (§12.1); a shell write is only held back by the brief
             if member {
                 args.push(format!("--disallowedTools=Edit({}/**)", crate::worktree::MEMORY));
@@ -221,11 +222,12 @@ pub(super) fn launch(core: &Arc<Core>, repo: &Arc<Repo>, ch: &str, node: &Node) 
             codex_protocol_ok(core, &command, &args, &env)?;
             args.extend(crate::agui::codex::args());
             args.extend(mount.args);
+            args.extend(models::args("codex", true, node.model.as_deref(), node.effort.as_deref()));
             Box::new(Codex::new(&thread, &cwd, resume, if node.read_only { "read-only" } else { CODEX_SANDBOX }))
         }
         _ => {
             args.push("acp".into());
-            Box::new(Acp::new(&thread, &cwd, resume))
+            Box::new(Acp::new(&thread, &cwd, resume).with_model(node.model.as_deref()))
         }
     };
     let mut env = env;

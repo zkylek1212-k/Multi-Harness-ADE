@@ -27,11 +27,28 @@ pub struct Acp {
     tools: HashSet<String>,
     /// approval key -> (request id, allow option, reject option)
     asks: HashMap<String, (Value, Option<String>, Option<String>)>,
+    /// The model the user picked (agy's ids carry the effort: gemini-4-neon-high); set before the first prompt
+    model: Option<String>,
+    /// The session/set_model request in flight: prompts wait for it
+    setting_model: Option<u64>,
 }
 
 impl Acp {
     pub fn new(thread: &str, cwd: &str, resume: Option<&str>) -> Self {
-        Acp { thread: thread.into(), cwd: cwd.into(), resume: resume.map(str::to_string), next_id: 3, session: None, loading: resume.is_some(), queued: vec![], prompts: HashMap::new(), runs: 0, run: None, message: None, messages: 0, tools: HashSet::new(), asks: HashMap::new() }
+        Acp { thread: thread.into(), cwd: cwd.into(), resume: resume.map(str::to_string), next_id: 3, session: None, loading: resume.is_some(), queued: vec![], prompts: HashMap::new(), runs: 0, run: None, message: None, messages: 0, tools: HashSet::new(), asks: HashMap::new(), model: None, setting_model: None }
+    }
+
+    pub fn with_model(mut self, model: Option<&str>) -> Self {
+        self.model = model.map(str::to_string);
+        self
+    }
+
+    fn flush(&mut self) -> Vec<Out> {
+        let mut out = vec![];
+        for text in std::mem::take(&mut self.queued) {
+            out.extend(self.send_prompt(&text));
+        }
+        out
     }
 
     fn rpc(id: u64, method: &str, params: Value) -> Out {
@@ -113,7 +130,13 @@ impl Harness for Acp {
             let tc = &m["params"]["toolCall"];
             let pick = |kind: &str| m["params"]["options"].as_array().and_then(|a| a.iter().find(|o| o["kind"] == kind)).and_then(|o| o["optionId"].as_str()).map(str::to_string);
             self.asks.insert(key.clone(), (m["id"].clone(), pick("allow_once"), pick("reject_once")));
-            let tool = tc["name"].as_str().or(tc["kind"].as_str()).unwrap_or("tool").to_string();
+            // An MCP call (agy: call_mcp_tool with ServerName/ToolName) is named the way Claude names it, mcp__server__tool,
+            // so the app's rules about its own workbench tools apply to every CLI alike
+            let raw = &tc["rawInput"];
+            let tool = match (tc["name"].as_str(), raw["ServerName"].as_str(), raw["ToolName"].as_str()) {
+                (Some("call_mcp_tool"), Some(server), Some(name)) => format!("mcp__{server}__{name}"),
+                _ => tc["name"].as_str().or(tc["kind"].as_str()).unwrap_or("tool").to_string(),
+            };
             let summary = tc["title"].as_str().map(str::to_string).unwrap_or_else(|| tool.clone());
             return vec![Out::Approval(Approval { id: key, tool, summary, input: tc.get("rawInput").cloned().unwrap_or(Value::Null), session_scope: false })];
         }
@@ -132,11 +155,21 @@ impl Harness for Acp {
                 return vec![Out::Ui(Event::RunError { message, code: None })];
             };
             self.session = Some(sid.clone());
-            let mut out = vec![Out::Session(sid)];
-            for text in std::mem::take(&mut self.queued) {
-                out.extend(self.send_prompt(&text));
+            let mut out = vec![Out::Session(sid.clone())];
+            if let Some(model) = self.model.clone() {
+                let id = self.next_id;
+                self.next_id += 1;
+                self.setting_model = Some(id);
+                out.push(Self::rpc(id, "session/set_model", json!({ "sessionId": sid, "modelId": model })));
+                return out;
             }
+            out.extend(self.flush());
             return out;
+        }
+        if Some(id) == self.setting_model {
+            // A model the agent refused leaves its own default; the conversation goes on either way
+            self.setting_model = None;
+            return self.flush();
         }
         let Some(run) = self.prompts.remove(&id) else { return vec![] };
         let mut out = self.close_run();
@@ -155,7 +188,7 @@ impl Harness for Acp {
     }
 
     fn prompt(&mut self, text: &str) -> Vec<Out> {
-        if self.session.is_none() {
+        if self.session.is_none() || self.setting_model.is_some() {
             self.queued.push(text.to_string());
             return vec![];
         }
@@ -230,5 +263,18 @@ mod tests {
         let [Out::Approval(a)] = &h.on_line(ask)[..] else { panic!() };
         let [Out::Send(s)] = &h.answer(&a.id, false, false)[..] else { panic!() };
         assert!(s.contains("\"optionId\":\"deny\"") && s.contains("\"id\":7"));
+        // A picked model is set before the first prompt goes out
+        let mut m = Acp::new("t", "C:/w", None).with_model(Some("gemini-3.8-flash-low"));
+        m.start();
+        assert!(m.prompt("hi").is_empty(), "no session yet");
+        let outs = m.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#);
+        assert!(matches!(&outs[..], [Out::Session(_), Out::Send(s)] if s.contains("session/set_model") && s.contains("gemini-3.8-flash-low")));
+        assert!(m.prompt("again").is_empty(), "prompts wait for the model");
+        let outs = m.on_line(r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+        assert_eq!(outs.iter().filter(|o| matches!(o, Out::Send(s) if s.contains("session/prompt"))).count(), 2);
+        // agy 1.x asks this way before calling an MCP server's tool (recorded 2026-11-19)
+        let mcp = r#"{"jsonrpc":"2.0","id":8,"method":"session/request_permission","params":{"toolCall":{"name":"call_mcp_tool","kind":"execute","title":"MCP Tool report","rawInput":{"Arguments":{"status":"done"},"ServerName":"workbench","ToolName":"report"}},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]}}"#;
+        let [Out::Approval(a)] = &h.on_line(mcp)[..] else { panic!() };
+        assert_eq!(a.tool, "mcp__workbench__report", "named like Claude's, so one rule covers every CLI");
     }
 }
